@@ -57,6 +57,11 @@ function formatNumber(value) {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(value);
 }
 
+function formatPct(value) {
+  if (!Number.isFinite(value)) return "N/A";
+  return `${value.toFixed(2)}%`;
+}
+
 function formatTimestamp(value) {
   if (!value) return "N/A";
   const date = new Date(value);
