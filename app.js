@@ -1,80 +1,6 @@
-const stocks = [
-  {
-    ticker: "ABCD",
-    company: "Abacus Discovery Corp",
-    price: 0.42,
-    marketCap: 18400000,
-    avgVolume: 1260000,
-    shortBorrowCost: 88.5,
-    optionIV: null,
-    delistReason: "Minimum bid price non-compliance",
-    expectedDelistingDate: "2026-04-03",
-    expertMarketEligible: true,
-    delistingChance: 82,
-    secFilingUrl: "https://www.sec.gov/edgar/search/#/q=ABCD%2520delisting",
-    notes: "Received Nasdaq deficiency notice and failed first reverse-split vote.",
-  },
-  {
-    ticker: "QTRX",
-    company: "Quatera Biopharma Inc",
-    price: 0.71,
-    marketCap: 29300000,
-    avgVolume: 2540000,
-    shortBorrowCost: 41.2,
-    optionIV: 146,
-    delistReason: "Shareholder equity requirement breach",
-    expectedDelistingDate: "2026-03-28",
-    expertMarketEligible: false,
-    delistingChance: 64,
-    secFilingUrl: "https://www.sec.gov/edgar/search/#/q=QTRX%2520listing%2520compliance",
-    notes: "Exchange hearing pending; likely OTC transfer if extension denied.",
-  },
-  {
-    ticker: "NRGL",
-    company: "Nerogal Energy Systems",
-    price: 1.18,
-    marketCap: 51200000,
-    avgVolume: 810000,
-    shortBorrowCost: 22.1,
-    optionIV: 93,
-    delistReason: "Late SEC filing (10-K / 10-Q)",
-    expectedDelistingDate: "2026-04-11",
-    expertMarketEligible: true,
-    delistingChance: 48,
-    secFilingUrl: "https://www.sec.gov/edgar/search/#/q=NRGL%2520NT%252010-K",
-    notes: "Auditor resignations increase risk despite active remediation plan.",
-  },
-  {
-    ticker: "MTRN",
-    company: "Metronexa Holdings",
-    price: 0.29,
-    marketCap: 12700000,
-    avgVolume: 3930000,
-    shortBorrowCost: 119.3,
-    optionIV: 205,
-    delistReason: "Bankruptcy / restructuring proceedings",
-    expectedDelistingDate: "2026-03-22",
-    expertMarketEligible: true,
-    delistingChance: 91,
-    secFilingUrl: "https://www.sec.gov/edgar/search/#/q=MTRN%2520chapter%252011",
-    notes: "DIP financing in place but common equity cancellation risk is high.",
-  },
-  {
-    ticker: "SVRA",
-    company: "Silvera Retail Group",
-    price: 0.95,
-    marketCap: 68300000,
-    avgVolume: 990000,
-    shortBorrowCost: 17.6,
-    optionIV: null,
-    delistReason: "Corporate governance deficiency",
-    expectedDelistingDate: "2026-04-15",
-    expertMarketEligible: false,
-    delistingChance: 35,
-    secFilingUrl: "https://www.sec.gov/edgar/search/#/q=SVRA%2520governance%2520deficiency",
-    notes: "Board composition fix proposed; timeline tight for compliance hearing.",
-  },
-];
+const DATA_URL = "data/stocks.json";
+const LIVE_QUOTE_REFRESH_MS = 60_000;
+const DATA_REFRESH_MS = 180_000;
 
 const tableBody = document.querySelector("#stocksTable tbody");
 const searchInput = document.getElementById("searchInput");
@@ -83,10 +9,14 @@ const expertFilter = document.getElementById("expertFilter");
 const chanceFilter = document.getElementById("chanceFilter");
 const detailsContent = document.getElementById("detailsContent");
 const headers = document.querySelectorAll("#stocksTable th");
+const lastUpdatedEl = document.getElementById("lastUpdated");
+const liveStatusEl = document.getElementById("liveStatus");
 
+let stocks = [];
 let selectedTicker = null;
 let sortKey = "delistingChance";
 let sortDir = "desc";
+let dataGeneratedAt = null;
 
 function isSafeExternalUrl(value) {
   try {
@@ -124,20 +54,71 @@ function formatNumber(value) {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(value);
 }
 
+function formatTimestamp(value) {
+  if (!value) return "N/A";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "N/A";
+  return date.toLocaleString();
+}
+
 function riskLabel(chance) {
   if (chance >= 70) return { text: `${chance}% (High)`, cls: "high" };
   if (chance >= 40) return { text: `${chance}% (Medium)`, cls: "medium" };
   return { text: `${chance}% (Low)`, cls: "low" };
 }
 
+function computeDelistReason(signals = {}) {
+  if (signals.bankruptcyProceeding) return "Bankruptcy / restructuring proceedings";
+  if (signals.lateFilingsCount > 0) return "Late SEC filing (10-K / 10-Q)";
+  if (signals.equityDeficiency) return "Shareholder equity requirement breach";
+  if (signals.governanceDeficiency) return "Corporate governance deficiency";
+  if (signals.bidBelowOneDollarDays > 30) return "Minimum bid price non-compliance";
+  return "Elevated listing-compliance risk";
+}
+
+function computeExpectedDelistingDate(signals = {}) {
+  if (signals.complianceDeadline) return signals.complianceDeadline;
+  if (signals.hearingDate) return signals.hearingDate;
+
+  const date = new Date();
+  date.setDate(date.getDate() + 30);
+  return date.toISOString().slice(0, 10);
+}
+
+function computeDelistingChance(signals = {}) {
+  let score = 20;
+  score += Math.min(35, (signals.bidBelowOneDollarDays || 0) * 0.4);
+  score += Math.min(18, (signals.lateFilingsCount || 0) * 9);
+  score += signals.equityDeficiency ? 12 : 0;
+  score += signals.governanceDeficiency ? 8 : 0;
+  score += signals.bankruptcyProceeding ? 30 : 0;
+  score += signals.reverseSplitPlanned ? 6 : 0;
+  return Math.max(5, Math.min(98, Math.round(score)));
+}
+
+function normalizeStock(rawStock) {
+  const signals = rawStock.signals || {};
+  return {
+    ...rawStock,
+    delistReason: rawStock.delistReason || computeDelistReason(signals),
+    expectedDelistingDate: rawStock.expectedDelistingDate || computeExpectedDelistingDate(signals),
+    delistingChance: rawStock.delistingChance || computeDelistingChance(signals),
+  };
+}
+
 function populateReasonOptions() {
+  const selected = reasonFilter.value;
   const reasons = [...new Set(stocks.map((stock) => stock.delistReason))].sort();
+  reasonFilter.innerHTML = '<option value="all">All reasons</option>';
+
   reasons.forEach((reason) => {
     const option = document.createElement("option");
     option.value = reason;
     option.textContent = reason;
     reasonFilter.appendChild(option);
   });
+
+  reasonFilter.value = reasons.includes(selected) ? selected : "all";
 }
 
 function getVisibleStocks() {
@@ -228,7 +209,14 @@ function renderTable() {
 }
 
 function renderDetails(stock) {
+  if (!stock) {
+    detailsContent.innerHTML = "";
+    return;
+  }
+
   const risk = riskLabel(stock.delistingChance);
+  const safeSecUrl = isSafeExternalUrl(stock.secFilingUrl) ? stock.secFilingUrl : "#";
+
   detailsContent.innerHTML = `
     <dl>
       <dt>Ticker</dt><dd>${stock.ticker}</dd>
@@ -242,8 +230,9 @@ function renderDetails(stock) {
       <dt>Short Borrow Cost</dt><dd>${stock.shortBorrowCost.toFixed(1)}%</dd>
       <dt>Option IV</dt><dd>${stock.optionIV ? `${stock.optionIV}%` : "N/A"}</dd>
       <dt>Potential Expert Market</dt><dd>${stock.expertMarketEligible ? "Yes" : "No"}</dd>
+      <dt>Data as of</dt><dd>${formatTimestamp(stock.dataAsOf)}</dd>
       <dt>Notes</dt><dd>${stock.notes}</dd>
-      <dt>SEC Filing</dt><dd><a href="${stock.secFilingUrl}" target="_blank" rel="noreferrer">Open SEC filing/search</a></dd>
+      <dt>SEC Filing</dt><dd><a href="${safeSecUrl}" target="_blank" rel="noreferrer">Open SEC filing/search</a></dd>
     </dl>
   `;
 }
@@ -255,6 +244,94 @@ function applySortHeaderUI() {
       header.classList.add(sortDir === "asc" ? "sort-asc" : "sort-desc");
     }
   });
+}
+
+function updateStatus(message) {
+  if (liveStatusEl) {
+    liveStatusEl.textContent = message;
+  }
+  if (lastUpdatedEl) {
+    lastUpdatedEl.textContent = dataGeneratedAt ? `Dataset: ${formatTimestamp(dataGeneratedAt)}` : "Dataset: n/a";
+  }
+}
+
+async function loadDataset() {
+  const response = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Failed to load stock dataset (${response.status})`);
+  }
+
+  const payload = await response.json();
+  dataGeneratedAt = payload.generatedAt || new Date().toISOString();
+  stocks = (payload.stocks || []).map(normalizeStock);
+  populateReasonOptions();
+
+  if (!selectedTicker || !stocks.some((stock) => stock.ticker === selectedTicker)) {
+    selectedTicker = stocks[0]?.ticker || null;
+  }
+
+  const selectedStock = stocks.find((stock) => stock.ticker === selectedTicker);
+  renderTable();
+  renderDetails(selectedStock);
+}
+
+async function refreshLiveQuotes() {
+  if (!stocks.length) return;
+  const symbols = stocks.map((stock) => stock.ticker).join(",");
+
+  try {
+    const response = await fetch(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`);
+    if (!response.ok) {
+      throw new Error(`Quote API returned ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const quotes = payload?.quoteResponse?.result || [];
+    const bySymbol = new Map(quotes.map((quote) => [quote.symbol, quote]));
+
+    let updated = 0;
+    stocks = stocks.map((stock) => {
+      const quote = bySymbol.get(stock.ticker);
+      if (!quote) return stock;
+
+      updated += 1;
+      return {
+        ...stock,
+        price: Number.isFinite(quote.regularMarketPrice) ? quote.regularMarketPrice : stock.price,
+        marketCap: Number.isFinite(quote.marketCap) ? quote.marketCap : stock.marketCap,
+        avgVolume: Number.isFinite(quote.regularMarketVolume) ? quote.regularMarketVolume : stock.avgVolume,
+        dataAsOf: quote.regularMarketTime
+          ? new Date(quote.regularMarketTime * 1000).toISOString()
+          : stock.dataAsOf,
+      };
+    });
+
+    renderTable();
+    renderDetails(stocks.find((stock) => stock.ticker === selectedTicker));
+    updateStatus(`Live quotes synced: ${updated}/${stocks.length} symbols at ${new Date().toLocaleTimeString()}.`);
+  } catch (error) {
+    updateStatus(`Live quote sync failed (${error.message}). Retrying automatically.`);
+  }
+}
+
+async function init() {
+  try {
+    await loadDataset();
+    updateStatus("Dataset loaded. Waiting for live quote sync...");
+    await refreshLiveQuotes();
+  } catch (error) {
+    updateStatus(`Unable to initialize data: ${error.message}`);
+  }
+
+  window.setInterval(() => {
+    loadDataset().catch((error) => {
+      updateStatus(`Dataset refresh failed (${error.message}).`);
+    });
+  }, DATA_REFRESH_MS);
+
+  window.setInterval(() => {
+    refreshLiveQuotes();
+  }, LIVE_QUOTE_REFRESH_MS);
 }
 
 searchInput.addEventListener("input", renderTable);
@@ -276,9 +353,5 @@ headers.forEach((header) => {
   });
 });
 
-populateReasonOptions();
 applySortHeaderUI();
-renderTable();
-renderDetails(stocks[0]);
-selectedTicker = stocks[0].ticker;
-renderTable();
+init();
