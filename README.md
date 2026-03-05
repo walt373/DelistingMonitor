@@ -20,6 +20,12 @@ Open: <http://localhost:4173/index.html>
 4. Select branch `main` and folder `/ (root)`.
 5. Save and wait for deployment.
 
+## Live auto-refresh behavior
+
+- On page load, the app fetches `data/stocks.json` and computes delisting reason, expected date, and risk score from each stock's `signals` values.
+- It then polls Yahoo Finance quote data for the tracked symbols and updates price, market cap, volume, and quote timestamp automatically every 60 seconds.
+- The local dataset is also re-fetched every 3 minutes so any JSON changes appear without reloading the page.
+
 ## Data model
 
 - Input data lives in `data/stocks.json` and currently contains real company tickers plus illustrative risk fields.
