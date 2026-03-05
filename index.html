@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Delisting Risk Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Delisting Risk Dashboard (Next 30 Days)</h1>
+    <p>Monitor potentially delisting stocks, rank risk, and review SEC filing evidence.</p>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <div class="controls">
+        <label>
+          Search ticker/company
+          <input type="search" id="searchInput" placeholder="e.g. ABCD, Acme" />
+        </label>
+
+        <label>
+          Delist reason
+          <select id="reasonFilter">
+            <option value="all">All reasons</option>
+          </select>
+        </label>
+
+        <label>
+          Can go expert market
+          <select id="expertFilter">
+            <option value="all">All</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </label>
+
+        <label>
+          Min delisting chance (%)
+          <input type="number" id="chanceFilter" min="0" max="100" step="1" value="0" />
+        </label>
+      </div>
+
+      <div class="table-wrap">
+        <table id="stocksTable">
+          <thead>
+            <tr>
+              <th data-key="ticker">Ticker</th>
+              <th data-key="company">Company</th>
+              <th data-key="price">Price</th>
+              <th data-key="marketCap">Market Cap</th>
+              <th data-key="avgVolume">Avg Volume</th>
+              <th data-key="shortBorrowCost">Short Borrow Cost</th>
+              <th data-key="optionIV">Option IV</th>
+              <th data-key="delistReason">Delist Reason</th>
+              <th data-key="expectedDelistingDate">Expected Delisting Date</th>
+              <th data-key="expertMarketEligible">Expert Market?</th>
+              <th data-key="delistingChance">Delisting Chance</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="panel details" id="detailsPanel">
+      <h2>Stock Details</h2>
+      <p class="hint">Click a stock row to drill into details.</p>
+      <div id="detailsContent"></div>
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

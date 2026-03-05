@@ -1,0 +1,167 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #f3f6fb;
+  color: #1c2532;
+}
+
+header {
+  background: #10233d;
+  color: #fff;
+  padding: 1.25rem 1.5rem;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+header p {
+  margin: 0.35rem 0 0;
+  color: #c9d4e7;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(260px, 1fr);
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.panel {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(16, 35, 61, 0.15);
+  padding: 1rem;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 0.85rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: #3a4b62;
+}
+
+input,
+select {
+  border: 1px solid #b8c5d7;
+  border-radius: 6px;
+  padding: 0.5rem;
+  font-size: 0.92rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+th,
+td {
+  border-bottom: 1px solid #e0e6f0;
+  padding: 0.6rem 0.5rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+th {
+  background: #eef3fb;
+  position: sticky;
+  top: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+th.sort-asc::after {
+  content: " ▲";
+}
+
+th.sort-desc::after {
+  content: " ▼";
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+tbody tr:hover {
+  background: #f8fbff;
+}
+
+tbody tr.selected {
+  background: #e6f0ff;
+}
+
+.pill {
+  border-radius: 999px;
+  font-size: 0.78rem;
+  padding: 0.18rem 0.42rem;
+  font-weight: 600;
+}
+
+.pill.high {
+  background: #ffd9dc;
+  color: #9a1d23;
+}
+
+.pill.medium {
+  background: #fff1c7;
+  color: #8a6500;
+}
+
+.pill.low {
+  background: #d7f7dd;
+  color: #126426;
+}
+
+.details h2 {
+  margin-top: 0;
+}
+
+.hint {
+  margin-top: 0;
+  color: #62778f;
+}
+
+#detailsContent dl {
+  margin: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+#detailsContent dt {
+  font-size: 0.8rem;
+  color: #61728a;
+}
+
+#detailsContent dd {
+  margin: 0;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+#detailsContent a {
+  color: #0e4fb4;
+}
+
+@media (max-width: 1050px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
