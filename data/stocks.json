@@ -1,0 +1,126 @@
+{
+  "generatedAt": "2026-03-07T14:30:00Z",
+  "sourceSummary": "Demo pipeline payload for UI behavior. Replace with live providers in production.",
+  "stocks": [
+    {
+      "ticker": "ABCD",
+      "company": "Abacus Discovery Corp",
+      "price": 0.42,
+      "marketCap": 18400000,
+      "avgVolume": 1260000,
+      "shortBorrowCost": 88.5,
+      "optionIV": null,
+      "expertMarketEligible": true,
+      "secFilingUrl": "https://www.sec.gov/edgar/search/#/q=ABCD%2520delisting",
+      "notes": "Received Nasdaq deficiency notice and failed first reverse-split vote.",
+      "signals": {
+        "bidBelowOneDollarDays": 76,
+        "lateFilingsCount": 1,
+        "equityDeficiency": false,
+        "bankruptcyProceeding": false,
+        "governanceDeficiency": false,
+        "reverseSplitPlanned": true,
+        "hearingDate": "2026-03-24",
+        "complianceDeadline": "2026-04-03",
+        "lastNoticeDate": "2026-03-01"
+      },
+      "dataAsOf": "2026-03-07T14:00:00Z"
+    },
+    {
+      "ticker": "QTRX",
+      "company": "Quatera Biopharma Inc",
+      "price": 0.71,
+      "marketCap": 29300000,
+      "avgVolume": 2540000,
+      "shortBorrowCost": 41.2,
+      "optionIV": 146,
+      "expertMarketEligible": false,
+      "secFilingUrl": "https://www.sec.gov/edgar/search/#/q=QTRX%2520listing%2520compliance",
+      "notes": "Exchange hearing pending; likely OTC transfer if extension denied.",
+      "signals": {
+        "bidBelowOneDollarDays": 41,
+        "lateFilingsCount": 0,
+        "equityDeficiency": true,
+        "bankruptcyProceeding": false,
+        "governanceDeficiency": false,
+        "reverseSplitPlanned": false,
+        "hearingDate": "2026-03-19",
+        "complianceDeadline": "2026-03-28",
+        "lastNoticeDate": "2026-02-27"
+      },
+      "dataAsOf": "2026-03-07T14:00:00Z"
+    },
+    {
+      "ticker": "NRGL",
+      "company": "Nerogal Energy Systems",
+      "price": 1.18,
+      "marketCap": 51200000,
+      "avgVolume": 810000,
+      "shortBorrowCost": 22.1,
+      "optionIV": 93,
+      "expertMarketEligible": true,
+      "secFilingUrl": "https://www.sec.gov/edgar/search/#/q=NRGL%2520NT%252010-K",
+      "notes": "Auditor resignations increase risk despite active remediation plan.",
+      "signals": {
+        "bidBelowOneDollarDays": 0,
+        "lateFilingsCount": 2,
+        "equityDeficiency": false,
+        "bankruptcyProceeding": false,
+        "governanceDeficiency": false,
+        "reverseSplitPlanned": false,
+        "hearingDate": null,
+        "complianceDeadline": "2026-04-11",
+        "lastNoticeDate": "2026-03-03"
+      },
+      "dataAsOf": "2026-03-07T14:00:00Z"
+    },
+    {
+      "ticker": "MTRN",
+      "company": "Metronexa Holdings",
+      "price": 0.29,
+      "marketCap": 12700000,
+      "avgVolume": 3930000,
+      "shortBorrowCost": 119.3,
+      "optionIV": 205,
+      "expertMarketEligible": true,
+      "secFilingUrl": "https://www.sec.gov/edgar/search/#/q=MTRN%2520chapter%252011",
+      "notes": "DIP financing in place but common equity cancellation risk is high.",
+      "signals": {
+        "bidBelowOneDollarDays": 89,
+        "lateFilingsCount": 1,
+        "equityDeficiency": true,
+        "bankruptcyProceeding": true,
+        "governanceDeficiency": false,
+        "reverseSplitPlanned": false,
+        "hearingDate": "2026-03-15",
+        "complianceDeadline": "2026-03-22",
+        "lastNoticeDate": "2026-03-06"
+      },
+      "dataAsOf": "2026-03-07T14:00:00Z"
+    },
+    {
+      "ticker": "SVRA",
+      "company": "Silvera Retail Group",
+      "price": 0.95,
+      "marketCap": 68300000,
+      "avgVolume": 990000,
+      "shortBorrowCost": 17.6,
+      "optionIV": null,
+      "expertMarketEligible": false,
+      "secFilingUrl": "https://www.sec.gov/edgar/search/#/q=SVRA%2520governance%2520deficiency",
+      "notes": "Board composition fix proposed; timeline tight for compliance hearing.",
+      "signals": {
+        "bidBelowOneDollarDays": 15,
+        "lateFilingsCount": 0,
+        "equityDeficiency": false,
+        "bankruptcyProceeding": false,
+        "governanceDeficiency": true,
+        "reverseSplitPlanned": false,
+        "hearingDate": null,
+        "complianceDeadline": "2026-04-15",
+        "lastNoticeDate": "2026-03-02"
+      },
+      "dataAsOf": "2026-03-07T14:00:00Z"
+    }
+  ]
+}
