@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>Delisting Risk Dashboard (Next 30 Days)</h1>
-    <p>Rule-based risk scoring with transparent rationale, source timestamps, and SEC links.</p>
+    <p>Monitor potentially delisting stocks, rank risk, and review SEC filing evidence.</p>
   </header>
 
   <main class="layout">
@@ -17,7 +17,7 @@
       <div class="controls">
         <label>
           Search ticker/company
-          <input type="search" id="searchInput" placeholder="e.g. TSLA, Tesla" />
+          <input type="search" id="searchInput" placeholder="e.g. ABCD, Acme" />
         </label>
 
         <label>
@@ -41,8 +41,6 @@
           <input type="number" id="chanceFilter" min="0" max="100" step="1" value="0" />
         </label>
       </div>
-
-      <div class="status-line" id="dataStatus">Loading dataset…</div>
 
       <div class="table-wrap">
         <table id="stocksTable">

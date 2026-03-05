@@ -30,3 +30,12 @@ Open: <http://localhost:4173/index.html>
 - Computed values are rule-based and include rationale in the details panel.
 
 This keeps objective data in a pipeline-friendly JSON payload while keeping risk scoring transparent.
+
+## PR recovery on GitHub (no command line)
+
+If a pull request shows **"invalid branch"** after accidental deletion, you can recover from the GitHub UI:
+
+1. Open the old PR and click **Restore branch** (if available).
+2. If restore is unavailable, go to **Pull requests → New pull request** and create a fresh PR from your latest branch into `main`.
+3. Add a note in the PR body that it replaces the broken PR so reviewers can continue quickly.
+
