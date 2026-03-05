@@ -27,7 +27,7 @@ header p {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) minmax(280px, 1fr);
+  grid-template-columns: minmax(0, 2.2fr) minmax(260px, 1fr);
   gap: 1rem;
   padding: 1rem;
 }
@@ -44,12 +44,6 @@ header p {
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 0.65rem;
   margin-bottom: 0.85rem;
-}
-
-.status-line {
-  margin-bottom: 0.8rem;
-  font-size: 0.82rem;
-  color: #486179;
 }
 
 label {
@@ -148,7 +142,7 @@ tbody tr.selected {
 #detailsContent dl {
   margin: 0;
   display: grid;
-  gap: 0.35rem;
+  gap: 0.4rem;
 }
 
 #detailsContent dt {
@@ -164,15 +158,6 @@ tbody tr.selected {
 
 #detailsContent a {
   color: #0e4fb4;
-}
-
-.rationale-list {
-  margin: 0;
-  padding-left: 1rem;
-}
-
-.rationale-list li {
-  margin-bottom: 0.2rem;
 }
 
 @media (max-width: 1050px) {
