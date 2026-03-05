@@ -2,7 +2,7 @@
 
 This repository contains a static web dashboard for monitoring stocks likely to be delisted in the next month.
 
-The dashboard no longer ships with seeded stocks; it discovers candidates from recent SEC filings at runtime.
+The seeded dataset uses active listed companies and avoids retired/delisted symbols so live quote refresh can resolve correctly.
 
 ## Run locally
 
@@ -22,10 +22,9 @@ Open: <http://localhost:4173/index.html>
 
 ## Live auto-refresh behavior
 
-- On page load, the app shows `Loading stocks...` and queries recent SEC filings to discover likely delisting candidates.
-- Candidates are ranked from filing matches (e.g., listing deficiencies, minimum bid warnings, Form 25 withdrawal filings) and then displayed in the dashboard.
-- Yahoo Finance quotes are polled every 60 seconds to refresh price, market cap, and volume.
-- SEC scan is repeated every 15 minutes to keep the candidate list fresh.
+- On page load, the app fetches `data/stocks.json` and computes delisting reason, expected date, and risk score from each stock's `signals` values.
+- It then polls Yahoo Finance quote data for the tracked symbols and updates price, market cap, volume, and quote timestamp automatically every 60 seconds.
+- The local dataset is also re-fetched every 3 minutes so any JSON changes appear without reloading the page.
 
 ## Data model
 

@@ -1,7 +1,6 @@
-const SEC_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index";
+const DATA_URL = "data/stocks.json";
 const LIVE_QUOTE_REFRESH_MS = 60_000;
-const SEC_SCAN_REFRESH_MS = 15 * 60_000;
-const MAX_STOCKS = 15;
+const DATA_REFRESH_MS = 180_000;
 
 const tableBody = document.querySelector("#stocksTable tbody");
 const searchInput = document.getElementById("searchInput");
@@ -18,15 +17,6 @@ let selectedTicker = null;
 let sortKey = "delistingChance";
 let sortDir = "desc";
 let dataGeneratedAt = null;
-
-const DELISTING_QUERIES = [
-  { text: '"minimum bid price"', label: "Minimum bid price non-compliance", weight: 28 },
-  { text: '"listing standards" deficiency', label: "Exchange listing standards deficiency", weight: 24 },
-  { text: '"delisting" "notice"', label: "Delisting notice / warning", weight: 26 },
-  { text: '"non-compliance" "Nasdaq"', label: "Nasdaq non-compliance", weight: 22 },
-  { text: '"item 3.01" "8-k"', label: "8-K listing-compliance disclosure", weight: 18 },
-  { text: '"form 25" "withdrawal from listing"', label: "Exchange withdrawal filing", weight: 32 },
-];
 
 function isSafeExternalUrl(value) {
   try {
@@ -67,10 +57,6 @@ function formatNumber(value) {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(value);
 }
 
-function formatPct(value) {
-  return Number.isFinite(value) ? `${value.toFixed(1)}%` : "N/A";
-}
-
 function formatTimestamp(value) {
   if (!value) return "N/A";
   const date = new Date(value);
@@ -84,15 +70,43 @@ function riskLabel(chance) {
   return { text: `${chance}% (Low)`, cls: "low" };
 }
 
-function scoreFromSignals(rawScore) {
-  return Math.max(15, Math.min(97, Math.round(rawScore)));
+function computeDelistReason(signals = {}) {
+  if (signals.bankruptcyProceeding) return "Bankruptcy / restructuring proceedings";
+  if (signals.lateFilingsCount > 0) return "Late SEC filing (10-K / 10-Q)";
+  if (signals.equityDeficiency) return "Shareholder equity requirement breach";
+  if (signals.governanceDeficiency) return "Corporate governance deficiency";
+  if (signals.bidBelowOneDollarDays > 30) return "Minimum bid price non-compliance";
+  return "Elevated listing-compliance risk";
 }
 
-function expectedDelistingDateFrom(dateStr) {
-  const base = dateStr ? new Date(dateStr) : new Date();
-  const date = Number.isNaN(base.getTime()) ? new Date() : base;
+function computeExpectedDelistingDate(signals = {}) {
+  if (signals.complianceDeadline) return signals.complianceDeadline;
+  if (signals.hearingDate) return signals.hearingDate;
+
+  const date = new Date();
   date.setDate(date.getDate() + 30);
   return date.toISOString().slice(0, 10);
+}
+
+function computeDelistingChance(signals = {}) {
+  let score = 20;
+  score += Math.min(35, (signals.bidBelowOneDollarDays || 0) * 0.4);
+  score += Math.min(18, (signals.lateFilingsCount || 0) * 9);
+  score += signals.equityDeficiency ? 12 : 0;
+  score += signals.governanceDeficiency ? 8 : 0;
+  score += signals.bankruptcyProceeding ? 30 : 0;
+  score += signals.reverseSplitPlanned ? 6 : 0;
+  return Math.max(5, Math.min(98, Math.round(score)));
+}
+
+function normalizeStock(rawStock) {
+  const signals = rawStock.signals || {};
+  return {
+    ...rawStock,
+    delistReason: rawStock.delistReason || computeDelistReason(signals),
+    expectedDelistingDate: rawStock.expectedDelistingDate || computeExpectedDelistingDate(signals),
+    delistingChance: rawStock.delistingChance || computeDelistingChance(signals),
+  };
 }
 
 function populateReasonOptions() {
@@ -221,7 +235,7 @@ function renderDetails(stock) {
       <dt>Potential Expert Market</dt><dd>${stock.expertMarketEligible ? "Yes" : "No"}</dd>
       <dt>Data as of</dt><dd>${formatTimestamp(stock.dataAsOf)}</dd>
       <dt>Notes</dt><dd>${stock.notes}</dd>
-      <dt>SEC Filing</dt><dd><a href="${safeSecUrl}" target="_blank" rel="noreferrer">Open filing details</a></dd>
+      <dt>SEC Filing</dt><dd><a href="${safeSecUrl}" target="_blank" rel="noreferrer">Open SEC filing/search</a></dd>
     </dl>
   `;
 }
@@ -244,125 +258,24 @@ function updateStatus(message) {
   }
 }
 
-function parseSecHit(hit, queryMeta) {
-  const source = hit?._source || {};
-  const ticker = Array.isArray(source.tickers) ? source.tickers[0] : null;
-  if (!ticker || !/^[A-Z.]{1,6}$/.test(ticker)) return null;
-
-  const filedAt = source.filedAt || source.period_ending || null;
-  const filedMs = filedAt ? Date.parse(filedAt) : Date.now();
-  const ageDays = Math.max(0, (Date.now() - filedMs) / (1000 * 60 * 60 * 24));
-  const recencyBonus = Math.max(0, 18 - ageDays * 0.6);
-
-  const filingUrl = source.linkToHtml || source.linkToFilingDetails || source.linkToTxt || "";
-
-  return {
-    ticker,
-    company: source.display_names?.[0] || source.companyName || ticker,
-    filedAt,
-    filingUrl,
-    baseReason: queryMeta.label,
-    score: queryMeta.weight + recencyBonus,
-  };
-}
-
-async function searchSecForQuery(queryMeta) {
-  const body = {
-    q: queryMeta.text,
-    from: 0,
-    size: 25,
-    sort: [{ filedAt: { order: "desc" } }],
-  };
-
-  const response = await fetch(SEC_SEARCH_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
+async function loadDataset() {
+  const response = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: "no-store" });
   if (!response.ok) {
-    throw new Error(`SEC search failed (${response.status})`);
+    throw new Error(`Failed to load stock dataset (${response.status})`);
   }
 
   const payload = await response.json();
-  const hits = payload?.hits?.hits || [];
-  return hits.map((hit) => parseSecHit(hit, queryMeta)).filter(Boolean);
-}
-
-async function loadStocksFromSec() {
-  updateStatus("Loading stocks from latest SEC filings...");
-
-  const allHits = [];
-  for (const queryMeta of DELISTING_QUERIES) {
-    try {
-      const hits = await searchSecForQuery(queryMeta);
-      allHits.push(...hits);
-    } catch (_error) {
-      // keep trying remaining queries
-    }
-  }
-
-  const aggregate = new Map();
-  allHits.forEach((hit) => {
-    const current = aggregate.get(hit.ticker) || {
-      ticker: hit.ticker,
-      company: hit.company,
-      score: 0,
-      reasons: new Set(),
-      latestFiledAt: hit.filedAt,
-      secFilingUrl: hit.filingUrl,
-      matchCount: 0,
-    };
-
-    current.score += hit.score;
-    current.matchCount += 1;
-    current.reasons.add(hit.baseReason);
-
-    if (!current.latestFiledAt || (hit.filedAt && Date.parse(hit.filedAt) > Date.parse(current.latestFiledAt))) {
-      current.latestFiledAt = hit.filedAt;
-      current.secFilingUrl = hit.filingUrl || current.secFilingUrl;
-    }
-
-    aggregate.set(hit.ticker, current);
-  });
-
-  const ranked = [...aggregate.values()]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, MAX_STOCKS)
-    .map((item) => {
-      const riskScore = scoreFromSignals(25 + item.score * 0.8 + item.matchCount * 3);
-      const primaryReason = [...item.reasons][0] || "Elevated listing-compliance risk";
-      return {
-        ticker: item.ticker,
-        company: item.company,
-        price: null,
-        marketCap: null,
-        avgVolume: null,
-        shortBorrowCost: null,
-        optionIV: null,
-        delistReason: primaryReason,
-        expectedDelistingDate: expectedDelistingDateFrom(item.latestFiledAt),
-        expertMarketEligible: riskScore >= 70,
-        delistingChance: riskScore,
-        secFilingUrl: item.secFilingUrl || `https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(item.ticker)}`,
-        notes: `Derived from ${item.matchCount} recent SEC filing match(es): ${[...item.reasons].join(", ")}.`,
-        dataAsOf: item.latestFiledAt,
-      };
-    });
-
-  if (!ranked.length) {
-    throw new Error("No delisting candidates returned from SEC search.");
-  }
-
-  stocks = ranked;
-  dataGeneratedAt = new Date().toISOString();
-
+  dataGeneratedAt = payload.generatedAt || new Date().toISOString();
+  stocks = (payload.stocks || []).map(normalizeStock);
   populateReasonOptions();
-  selectedTicker = stocks[0]?.ticker || null;
+
+  if (!selectedTicker || !stocks.some((stock) => stock.ticker === selectedTicker)) {
+    selectedTicker = stocks[0]?.ticker || null;
+  }
+
+  const selectedStock = stocks.find((stock) => stock.ticker === selectedTicker);
   renderTable();
-  renderDetails(stocks[0] || null);
+  renderDetails(selectedStock);
 }
 
 async function refreshLiveQuotes() {
@@ -404,25 +317,20 @@ async function refreshLiveQuotes() {
   }
 }
 
-async function refreshAllData() {
-  await loadStocksFromSec();
-  updateStatus("Stocks loaded from SEC filings. Syncing live quotes...");
-  await refreshLiveQuotes();
-}
-
 async function init() {
-  updateStatus("Loading stocks...");
   try {
-    await refreshAllData();
+    await loadDataset();
+    updateStatus("Dataset loaded. Waiting for live quote sync...");
+    await refreshLiveQuotes();
   } catch (error) {
-    updateStatus(`Unable to load stocks from SEC filings: ${error.message}`);
+    updateStatus(`Unable to initialize data: ${error.message}`);
   }
 
   window.setInterval(() => {
-    refreshAllData().catch((error) => {
-      updateStatus(`SEC filing refresh failed (${error.message}).`);
+    loadDataset().catch((error) => {
+      updateStatus(`Dataset refresh failed (${error.message}).`);
     });
-  }, SEC_SCAN_REFRESH_MS);
+  }, DATA_REFRESH_MS);
 
   window.setInterval(() => {
     refreshLiveQuotes();
