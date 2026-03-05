@@ -2,6 +2,8 @@
 
 This repository contains a static web dashboard for monitoring stocks likely to be delisted in the next month.
 
+The seeded dataset now uses real listed companies (instead of placeholder tickers) that have had elevated listing-compliance or distress signals in recent disclosures.
+
 ## Run locally
 
 ```bash
@@ -20,7 +22,7 @@ Open: <http://localhost:4173/index.html>
 
 ## Data model
 
-- Input data lives in `data/stocks.json`.
+- Input data lives in `data/stocks.json` and currently contains real company tickers plus illustrative risk fields.
 - The dashboard computes:
   - `delistReason`
   - `expectedDelistingDate`
