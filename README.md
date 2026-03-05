@@ -2,7 +2,7 @@
 
 This repository contains a static web dashboard for monitoring stocks likely to be delisted in the next month.
 
-The seeded dataset now uses real listed companies (instead of placeholder tickers) that have had elevated listing-compliance or distress signals in recent disclosures.
+The seeded dataset uses active listed companies and avoids retired/delisted symbols so live quote refresh can resolve correctly.
 
 ## Run locally
 
@@ -19,6 +19,12 @@ Open: <http://localhost:4173/index.html>
 3. Set **Source** to **Deploy from a branch**.
 4. Select branch `main` and folder `/ (root)`.
 5. Save and wait for deployment.
+
+## Live auto-refresh behavior
+
+- On page load, the app fetches `data/stocks.json` and computes delisting reason, expected date, and risk score from each stock's `signals` values.
+- It then polls Yahoo Finance quote data for the tracked symbols and updates price, market cap, volume, and quote timestamp automatically every 60 seconds.
+- The local dataset is also re-fetched every 3 minutes so any JSON changes appear without reloading the page.
 
 ## Data model
 
