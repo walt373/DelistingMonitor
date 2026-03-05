@@ -88,6 +88,21 @@ let selectedTicker = null;
 let sortKey = "delistingChance";
 let sortDir = "desc";
 
+function isSafeExternalUrl(value) {
+  try {
+    const parsed = new URL(value, window.location.origin);
+    return ["http:", "https:"].includes(parsed.protocol);
+  } catch (_error) {
+    return false;
+  }
+}
+
+function appendCell(row, text) {
+  const cell = document.createElement("td");
+  cell.textContent = text;
+  row.appendChild(cell);
+}
+
 function formatMoney(value) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -177,19 +192,23 @@ function renderTable() {
 
     const risk = riskLabel(stock.delistingChance);
 
-    tr.innerHTML = `
-      <td>${stock.ticker}</td>
-      <td>${stock.company}</td>
-      <td>${formatMoney(stock.price)}</td>
-      <td>${formatCompactMoney(stock.marketCap)}</td>
-      <td>${formatNumber(stock.avgVolume)}</td>
-      <td>${stock.shortBorrowCost.toFixed(1)}%</td>
-      <td>${stock.optionIV ? `${stock.optionIV}%` : "N/A"}</td>
-      <td>${stock.delistReason}</td>
-      <td>${stock.expectedDelistingDate}</td>
-      <td>${stock.expertMarketEligible ? "Yes" : "No"}</td>
-      <td><span class="pill ${risk.cls}">${risk.text}</span></td>
-    `;
+    appendCell(tr, stock.ticker);
+    appendCell(tr, stock.company);
+    appendCell(tr, formatMoney(stock.price));
+    appendCell(tr, formatCompactMoney(stock.marketCap));
+    appendCell(tr, formatNumber(stock.avgVolume));
+    appendCell(tr, `${stock.shortBorrowCost.toFixed(1)}%`);
+    appendCell(tr, stock.optionIV ? `${stock.optionIV}%` : "N/A");
+    appendCell(tr, stock.delistReason);
+    appendCell(tr, stock.expectedDelistingDate);
+    appendCell(tr, stock.expertMarketEligible ? "Yes" : "No");
+
+    const riskCell = document.createElement("td");
+    const riskPill = document.createElement("span");
+    riskPill.className = `pill ${risk.cls}`;
+    riskPill.textContent = risk.text;
+    riskCell.appendChild(riskPill);
+    tr.appendChild(riskCell);
 
     tr.addEventListener("click", () => {
       selectedTicker = stock.ticker;
