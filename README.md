@@ -2,7 +2,7 @@
 
 This repository contains a static web dashboard for monitoring stocks likely to be delisted in the next month.
 
-The seeded dataset now uses real listed companies (instead of placeholder tickers) that have had elevated listing-compliance or distress signals in recent disclosures.
+The seeded dataset uses active listed companies and avoids retired/delisted symbols so live quote refresh can resolve correctly.
 
 ## Run locally
 
