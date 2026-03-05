@@ -28,14 +28,12 @@ Open: <http://localhost:4173/index.html>
 
 ## Data model
 
-- Input data lives in `data/stocks.json` and currently contains real company tickers plus illustrative risk fields.
+- Candidate universe is discovered dynamically from SEC filing search results (no static stock seed).
 - The dashboard computes:
   - `delistReason`
   - `expectedDelistingDate`
   - `delistingChance`
-- Computed values are rule-based and include rationale in the details panel.
-
-This keeps objective data in a pipeline-friendly JSON payload while keeping risk scoring transparent.
+- Values are rule-based and include rationale in the details panel.
 
 ## PR recovery on GitHub (no command line)
 

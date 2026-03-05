@@ -34,6 +34,7 @@ function appendCell(row, text) {
 }
 
 function formatMoney(value) {
+  if (!Number.isFinite(value)) return "N/A";
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -42,6 +43,7 @@ function formatMoney(value) {
 }
 
 function formatCompactMoney(value) {
+  if (!Number.isFinite(value)) return "N/A";
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -51,6 +53,7 @@ function formatCompactMoney(value) {
 }
 
 function formatNumber(value) {
+  if (!Number.isFinite(value)) return "N/A";
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(value);
 }
 
@@ -178,8 +181,8 @@ function renderTable() {
     appendCell(tr, formatMoney(stock.price));
     appendCell(tr, formatCompactMoney(stock.marketCap));
     appendCell(tr, formatNumber(stock.avgVolume));
-    appendCell(tr, `${stock.shortBorrowCost.toFixed(1)}%`);
-    appendCell(tr, stock.optionIV ? `${stock.optionIV}%` : "N/A");
+    appendCell(tr, formatPct(stock.shortBorrowCost));
+    appendCell(tr, Number.isFinite(stock.optionIV) ? `${stock.optionIV}%` : "N/A");
     appendCell(tr, stock.delistReason);
     appendCell(tr, stock.expectedDelistingDate);
     appendCell(tr, stock.expertMarketEligible ? "Yes" : "No");
@@ -227,8 +230,8 @@ function renderDetails(stock) {
       <dt>Price</dt><dd>${formatMoney(stock.price)}</dd>
       <dt>Market Cap</dt><dd>${formatCompactMoney(stock.marketCap)}</dd>
       <dt>Average Volume</dt><dd>${formatNumber(stock.avgVolume)}</dd>
-      <dt>Short Borrow Cost</dt><dd>${stock.shortBorrowCost.toFixed(1)}%</dd>
-      <dt>Option IV</dt><dd>${stock.optionIV ? `${stock.optionIV}%` : "N/A"}</dd>
+      <dt>Short Borrow Cost</dt><dd>${formatPct(stock.shortBorrowCost)}</dd>
+      <dt>Option IV</dt><dd>${Number.isFinite(stock.optionIV) ? `${stock.optionIV}%` : "N/A"}</dd>
       <dt>Potential Expert Market</dt><dd>${stock.expertMarketEligible ? "Yes" : "No"}</dd>
       <dt>Data as of</dt><dd>${formatTimestamp(stock.dataAsOf)}</dd>
       <dt>Notes</dt><dd>${stock.notes}</dd>
