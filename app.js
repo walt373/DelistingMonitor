@@ -12,6 +12,21 @@ let selectedTicker = null;
 let sortKey = "delistingChance";
 let sortDir = "desc";
 
+function isSafeExternalUrl(value) {
+  try {
+    const parsed = new URL(value, window.location.origin);
+    return ["http:", "https:"].includes(parsed.protocol);
+  } catch (_error) {
+    return false;
+  }
+}
+
+function appendCell(row, text) {
+  const cell = document.createElement("td");
+  cell.textContent = text;
+  row.appendChild(cell);
+}
+
 function formatMoney(value) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -184,19 +199,23 @@ function renderTable() {
 
     const risk = riskLabel(stock.delistingChance);
 
-    tr.innerHTML = `
-      <td>${stock.ticker}</td>
-      <td>${stock.company}</td>
-      <td>${formatMoney(stock.price)}</td>
-      <td>${formatCompactMoney(stock.marketCap)}</td>
-      <td>${formatNumber(stock.avgVolume)}</td>
-      <td>${stock.shortBorrowCost.toFixed(1)}%</td>
-      <td>${stock.optionIV ? `${stock.optionIV}%` : "N/A"}</td>
-      <td>${stock.delistReason}</td>
-      <td>${stock.expectedDelistingDate}</td>
-      <td>${stock.expertMarketEligible ? "Yes" : "No"}</td>
-      <td><span class="pill ${risk.cls}">${risk.text}</span></td>
-    `;
+    appendCell(tr, stock.ticker);
+    appendCell(tr, stock.company);
+    appendCell(tr, formatMoney(stock.price));
+    appendCell(tr, formatCompactMoney(stock.marketCap));
+    appendCell(tr, formatNumber(stock.avgVolume));
+    appendCell(tr, `${stock.shortBorrowCost.toFixed(1)}%`);
+    appendCell(tr, stock.optionIV ? `${stock.optionIV}%` : "N/A");
+    appendCell(tr, stock.delistReason);
+    appendCell(tr, stock.expectedDelistingDate);
+    appendCell(tr, stock.expertMarketEligible ? "Yes" : "No");
+
+    const riskCell = document.createElement("td");
+    const riskPill = document.createElement("span");
+    riskPill.className = `pill ${risk.cls}`;
+    riskPill.textContent = risk.text;
+    riskCell.appendChild(riskPill);
+    tr.appendChild(riskCell);
 
     tr.addEventListener("click", () => {
       selectedTicker = stock.ticker;
@@ -217,27 +236,63 @@ function renderTable() {
 
 function renderDetails(stock) {
   const risk = riskLabel(stock.delistingChance);
-  const rationaleHtml = stock.scoreRationale.map((reason) => `<li>${reason}</li>`).join("");
+  detailsContent.textContent = "";
 
-  detailsContent.innerHTML = `
-    <dl>
-      <dt>Ticker</dt><dd>${stock.ticker}</dd>
-      <dt>Company</dt><dd>${stock.company}</dd>
-      <dt>Delist Reason</dt><dd>${stock.delistReason}</dd>
-      <dt>Expected Delisting Date</dt><dd>${stock.expectedDelistingDate}</dd>
-      <dt>Estimated Delisting Chance</dt><dd><span class="pill ${risk.cls}">${risk.text}</span></dd>
-      <dt>Price</dt><dd>${formatMoney(stock.price)}</dd>
-      <dt>Market Cap</dt><dd>${formatCompactMoney(stock.marketCap)}</dd>
-      <dt>Average Volume</dt><dd>${formatNumber(stock.avgVolume)}</dd>
-      <dt>Short Borrow Cost</dt><dd>${stock.shortBorrowCost.toFixed(1)}%</dd>
-      <dt>Option IV</dt><dd>${stock.optionIV ? `${stock.optionIV}%` : "N/A"}</dd>
-      <dt>Potential Expert Market</dt><dd>${stock.expertMarketEligible ? "Yes" : "No"}</dd>
-      <dt>Data As Of</dt><dd>${stock.dataAsOf}</dd>
-      <dt>Scoring rationale</dt><dd><ul class="rationale-list">${rationaleHtml}</ul></dd>
-      <dt>Notes</dt><dd>${stock.notes}</dd>
-      <dt>SEC Filing</dt><dd><a href="${stock.secFilingUrl}" target="_blank" rel="noreferrer">Open SEC filing/search</a></dd>
-    </dl>
-  `;
+  const dl = document.createElement("dl");
+  const appendDetail = (label, valueNodeOrText) => {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    if (valueNodeOrText instanceof Node) {
+      dd.appendChild(valueNodeOrText);
+    } else {
+      dd.textContent = valueNodeOrText;
+    }
+    dl.append(dt, dd);
+  };
+
+  appendDetail("Ticker", stock.ticker);
+  appendDetail("Company", stock.company);
+  appendDetail("Delist Reason", stock.delistReason);
+  appendDetail("Expected Delisting Date", stock.expectedDelistingDate);
+
+  const riskPill = document.createElement("span");
+  riskPill.className = `pill ${risk.cls}`;
+  riskPill.textContent = risk.text;
+  appendDetail("Estimated Delisting Chance", riskPill);
+
+  appendDetail("Price", formatMoney(stock.price));
+  appendDetail("Market Cap", formatCompactMoney(stock.marketCap));
+  appendDetail("Average Volume", formatNumber(stock.avgVolume));
+  appendDetail("Short Borrow Cost", `${stock.shortBorrowCost.toFixed(1)}%`);
+  appendDetail("Option IV", stock.optionIV ? `${stock.optionIV}%` : "N/A");
+  appendDetail("Potential Expert Market", stock.expertMarketEligible ? "Yes" : "No");
+  appendDetail("Data As Of", stock.dataAsOf);
+
+  const rationaleList = document.createElement("ul");
+  rationaleList.className = "rationale-list";
+  stock.scoreRationale.forEach((reason) => {
+    const item = document.createElement("li");
+    item.textContent = reason;
+    rationaleList.appendChild(item);
+  });
+  appendDetail("Scoring rationale", rationaleList);
+
+  appendDetail("Notes", stock.notes);
+
+  const filingLink = document.createElement("a");
+  filingLink.textContent = "Open SEC filing/search";
+  filingLink.target = "_blank";
+  filingLink.rel = "noreferrer";
+  if (isSafeExternalUrl(stock.secFilingUrl)) {
+    filingLink.href = stock.secFilingUrl;
+  } else {
+    filingLink.removeAttribute("href");
+    filingLink.setAttribute("aria-disabled", "true");
+  }
+  appendDetail("SEC Filing", filingLink);
+
+  detailsContent.appendChild(dl);
 }
 
 function applySortHeaderUI() {
