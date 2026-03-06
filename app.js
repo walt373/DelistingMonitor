@@ -17,7 +17,8 @@ let selectedTicker = null;
 let sortKey = "delistingChance";
 let sortDir = "desc";
 let dataGeneratedAt = null;
-let liveQuoteFailureCount = 0;
+let liveQuoteSyncEnabled = true;
+let liveQuoteTimerId = null;
 
 function isSafeExternalUrl(value) {
   try {
@@ -285,7 +286,7 @@ async function loadDataset() {
 }
 
 async function refreshLiveQuotes() {
-  if (!stocks.length) return;
+  if (!stocks.length || !liveQuoteSyncEnabled) return;
   const symbols = stocks.map((stock) => stock.ticker).join(",");
 
   try {
@@ -320,12 +321,15 @@ async function refreshLiveQuotes() {
     renderDetails(stocks.find((stock) => stock.ticker === selectedTicker));
     updateStatus(`Live quotes synced: ${updated}/${stocks.length} symbols at ${new Date().toLocaleTimeString()}.`);
   } catch (error) {
-    liveQuoteFailureCount += 1;
     const isNetworkOrCorsIssue = error instanceof TypeError;
-
     if (isNetworkOrCorsIssue) {
+      liveQuoteSyncEnabled = false;
+      if (liveQuoteTimerId) {
+        window.clearInterval(liveQuoteTimerId);
+        liveQuoteTimerId = null;
+      }
       updateStatus(
-        `Live quote request blocked in this browser/session (attempt ${liveQuoteFailureCount}). Retrying automatically.`
+        "Live quote sync is unavailable in this browser/session (network or CORS restriction). Using dataset values only."
       );
       return;
     }
@@ -353,7 +357,7 @@ async function init() {
     });
   }, DATA_REFRESH_MS);
 
-  window.setInterval(() => {
+  liveQuoteTimerId = window.setInterval(() => {
     refreshLiveQuotes();
   }, LIVE_QUOTE_REFRESH_MS);
 }
