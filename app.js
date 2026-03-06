@@ -17,6 +17,7 @@ let selectedTicker = null;
 let sortKey = "delistingChance";
 let sortDir = "desc";
 let dataGeneratedAt = null;
+let liveQuoteFailureCount = 0;
 
 function isSafeExternalUrl(value) {
   try {
@@ -314,10 +315,21 @@ async function refreshLiveQuotes() {
       };
     });
 
+    liveQuoteFailureCount = 0;
     renderTable();
     renderDetails(stocks.find((stock) => stock.ticker === selectedTicker));
     updateStatus(`Live quotes synced: ${updated}/${stocks.length} symbols at ${new Date().toLocaleTimeString()}.`);
   } catch (error) {
+    liveQuoteFailureCount += 1;
+    const isNetworkOrCorsIssue = error instanceof TypeError;
+
+    if (isNetworkOrCorsIssue) {
+      updateStatus(
+        `Live quote request blocked in this browser/session (attempt ${liveQuoteFailureCount}). Retrying automatically.`
+      );
+      return;
+    }
+
     updateStatus(`Live quote sync failed (${error.message}). Retrying automatically.`);
   }
 }
@@ -325,8 +337,12 @@ async function refreshLiveQuotes() {
 async function init() {
   try {
     await loadDataset();
-    updateStatus("Dataset loaded. Waiting for live quote sync...");
-    await refreshLiveQuotes();
+    if (!stocks.length) {
+      updateStatus("Dataset loaded with no tracked symbols. Add symbols to data/stocks.json to enable live quotes.");
+    } else {
+      updateStatus("Dataset loaded. Waiting for live quote sync...");
+      await refreshLiveQuotes();
+    }
   } catch (error) {
     updateStatus(`Unable to initialize data: ${error.message}`);
   }

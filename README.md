@@ -2,7 +2,7 @@
 
 This repository contains a static web dashboard for monitoring stocks likely to be delisted in the next month.
 
-The seeded dataset uses active listed companies and avoids retired/delisted symbols so live quote refresh can resolve correctly.
+The default dataset is intentionally empty so no demo symbols are preloaded. Add your own tracked symbols in `data/stocks.json` (or via your generator pipeline).
 
 ## Run locally
 
