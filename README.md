@@ -2,7 +2,7 @@
 
 This repository contains a static web dashboard for monitoring stocks likely to be delisted in the next month.
 
-The default dataset is intentionally empty so no demo symbols are preloaded. On load, the app also scans recent SEC filings for delisting-related language and auto-discovers symbols when available.
+The default dataset is intentionally empty so no demo symbols are preloaded. Add your own tracked symbols in `data/stocks.json` (or via your generator pipeline).
 
 ## Run locally
 
