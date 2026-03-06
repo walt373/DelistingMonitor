@@ -316,6 +316,7 @@ async function refreshLiveQuotes() {
       };
     });
 
+    liveQuoteFailureCount = 0;
     renderTable();
     renderDetails(stocks.find((stock) => stock.ticker === selectedTicker));
     updateStatus(`Live quotes synced: ${updated}/${stocks.length} symbols at ${new Date().toLocaleTimeString()}.`);
@@ -340,8 +341,12 @@ async function refreshLiveQuotes() {
 async function init() {
   try {
     await loadDataset();
-    updateStatus("Dataset loaded. Waiting for live quote sync...");
-    await refreshLiveQuotes();
+    if (!stocks.length) {
+      updateStatus("Dataset loaded with no tracked symbols. Add symbols to data/stocks.json to enable live quotes.");
+    } else {
+      updateStatus("Dataset loaded. Waiting for live quote sync...");
+      await refreshLiveQuotes();
+    }
   } catch (error) {
     updateStatus(`Unable to initialize data: ${error.message}`);
   }
