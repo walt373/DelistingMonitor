@@ -22,9 +22,11 @@ Open: <http://localhost:4173/index.html>
 
 ## Live auto-refresh behavior
 
-- On page load, the app fetches `data/stocks.json` and computes delisting reason, expected date, and risk score from each stock's `signals` values.
-- It then polls Yahoo Finance quote data for the tracked symbols and updates price, market cap, volume, and quote timestamp automatically every 60 seconds.
-- The local dataset is also re-fetched every 3 minutes so any JSON changes appear without reloading the page.
+- On page load, the app fetches `data/stocks.json`, then scans recent SEC current filings feeds using delisting-oriented query buckets (e.g., notice of delisting, late filings, bankruptcy/restructuring, listing non-compliance).
+- Symbols inferred from matching SEC filing entries are merged into the tracked universe automatically.
+- The app computes delisting reason, expected date, and risk score from each stock's `signals` values and inferred filing text.
+- It then polls Yahoo Finance quote data for tracked symbols and updates price, market cap, volume, and quote timestamp automatically every 60 seconds.
+- The SEC scan + dataset refresh runs every 15 minutes so newly filed candidates can appear automatically.
 
 ## Data model
 
