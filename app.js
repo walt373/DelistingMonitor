@@ -1,6 +1,34 @@
 const DATA_URL = "data/stocks.json";
 const LIVE_QUOTE_REFRESH_MS = 60_000;
-const DATA_REFRESH_MS = 180_000;
+const DATA_REFRESH_MS = 900_000;
+const SEC_MAX_ENTRIES_PER_QUERY = 40;
+
+const SEC_DISCOVERY_QUERIES = [
+  {
+    label: "Exchange delisting notices",
+    forms: "25-NSE,25,8-K",
+    keywords: ["notice of delisting", "delisting", "suspended from trading"],
+    reason: "Notice of delisting"
+  },
+  {
+    label: "Late filing notices",
+    forms: "NT 10-K,NT 10-Q,8-K",
+    keywords: ["unable to file", "late filing", "notification of late filing"],
+    reason: "Late SEC filing (10-K / 10-Q)"
+  },
+  {
+    label: "Bankruptcy/restructuring events",
+    forms: "8-K",
+    keywords: ["bankruptcy", "chapter 11", "restructuring support agreement"],
+    reason: "Bankruptcy / restructuring proceedings"
+  },
+  {
+    label: "Bid-price / compliance notices",
+    forms: "8-K",
+    keywords: ["minimum bid price", "non-compliance", "listing standards"],
+    reason: "Minimum bid price non-compliance"
+  }
+];
 
 const tableBody = document.querySelector("#stocksTable tbody");
 const searchInput = document.getElementById("searchInput");
@@ -17,6 +45,7 @@ let selectedTicker = null;
 let sortKey = "delistingChance";
 let sortDir = "desc";
 let dataGeneratedAt = null;
+let liveQuoteFailureCount = 0;
 
 function isSafeExternalUrl(value) {
   try {
@@ -112,6 +141,108 @@ function normalizeStock(rawStock) {
     expectedDelistingDate: rawStock.expectedDelistingDate || computeExpectedDelistingDate(signals),
     delistingChance: rawStock.delistingChance || computeDelistingChance(signals),
   };
+}
+
+
+function inferReasonFromText(text) {
+  const normalized = text.toLowerCase();
+  for (const query of SEC_DISCOVERY_QUERIES) {
+    if (query.keywords.some((keyword) => normalized.includes(keyword))) {
+      return query.reason;
+    }
+  }
+  return "Elevated listing-compliance risk";
+}
+
+function extractTickerFromText(text) {
+  if (!text) return null;
+
+  const parentheticalMatches = text.match(/\(([A-Z][A-Z0-9.-]{0,5})\)/g) || [];
+  for (const match of parentheticalMatches) {
+    const candidate = match.slice(1, -1).toUpperCase();
+    if (/^[A-Z][A-Z0-9.-]{0,5}$/.test(candidate) && !candidate.includes(" ")) return candidate;
+  }
+
+  const symbolMatch = text.toUpperCase().match(/\b(?:SYMBOL|TICKER)\s*[:=-]\s*([A-Z][A-Z0-9.-]{0,5})\b/);
+  if (symbolMatch) return symbolMatch[1];
+
+  return null;
+}
+
+function buildStockFromFiling(filing) {
+  const filingText = `${filing.title} ${filing.summary}`;
+  const ticker = extractTickerFromText(filingText);
+  if (!ticker) return null;
+
+  return normalizeStock({
+    ticker,
+    company: filing.company || `${ticker} (from SEC filing scan)`,
+    price: Number.NaN,
+    marketCap: Number.NaN,
+    avgVolume: Number.NaN,
+    shortBorrowCost: Number.NaN,
+    optionIV: Number.NaN,
+    expertMarketEligible: false,
+    delistReason: inferReasonFromText(filingText),
+    expectedDelistingDate: filing.filedDate || undefined,
+    secFilingUrl: filing.link || `https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(ticker)}`,
+    notes: `Auto-discovered from SEC recent filings: ${filing.title}`.slice(0, 400),
+    signals: {},
+    dataAsOf: new Date().toISOString()
+  });
+}
+
+async function fetchSecRecentFilingsForQuery(query) {
+  const url = new URL("https://www.sec.gov/cgi-bin/browse-edgar");
+  url.searchParams.set("action", "getcurrent");
+  url.searchParams.set("owner", "include");
+  url.searchParams.set("count", String(SEC_MAX_ENTRIES_PER_QUERY));
+  url.searchParams.set("output", "atom");
+  url.searchParams.set("type", query.forms);
+
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    throw new Error(`SEC feed request failed (${response.status}) for ${query.label}`);
+  }
+
+  const xmlText = await response.text();
+  const parser = new DOMParser();
+  const xml = parser.parseFromString(xmlText, "application/xml");
+  const parseError = xml.querySelector("parsererror");
+  if (parseError) {
+    throw new Error(`SEC feed parse error for ${query.label}`);
+  }
+
+  const entries = Array.from(xml.querySelectorAll("entry"));
+
+  return entries
+    .map((entry) => {
+      const title = entry.querySelector("title")?.textContent?.trim() || "";
+      const summary = entry.querySelector("summary")?.textContent?.trim() || "";
+      const company = entry.querySelector("conformed-name")?.textContent?.trim() || "";
+      const filedDate = entry.querySelector("filing-date")?.textContent?.trim() || "";
+      const link = entry.querySelector("link")?.getAttribute("href") || "";
+
+      return { title, summary, company, filedDate, link };
+    })
+    .filter((filing) => {
+      const haystack = `${filing.title} ${filing.summary}`.toLowerCase();
+      return query.keywords.some((keyword) => haystack.includes(keyword));
+    });
+}
+
+async function discoverStocksFromSecFilings() {
+  const byTicker = new Map();
+
+  for (const query of SEC_DISCOVERY_QUERIES) {
+    const filings = await fetchSecRecentFilingsForQuery(query);
+    for (const filing of filings) {
+      const stock = buildStockFromFiling(filing);
+      if (stock) byTicker.set(stock.ticker, stock);
+    }
+  }
+
+  return Array.from(byTicker.values());
 }
 
 function populateReasonOptions() {
@@ -272,6 +403,21 @@ async function loadDataset() {
   const payload = await response.json();
   dataGeneratedAt = payload.generatedAt || new Date().toISOString();
   stocks = (payload.stocks || []).map(normalizeStock);
+
+  try {
+    const discoveredStocks = await discoverStocksFromSecFilings();
+    if (discoveredStocks.length) {
+      const seeded = new Map(stocks.map((stock) => [stock.ticker, stock]));
+      for (const stock of discoveredStocks) {
+        seeded.set(stock.ticker, { ...stock, ...(seeded.get(stock.ticker) || {}) });
+      }
+      stocks = Array.from(seeded.values());
+      updateStatus(`SEC scan found ${discoveredStocks.length} symbols from recent filing queries.`);
+    }
+  } catch (error) {
+    updateStatus(`SEC filing scan failed (${error.message}). Using local dataset values.`);
+  }
+
   populateReasonOptions();
 
   if (!selectedTicker || !stocks.some((stock) => stock.ticker === selectedTicker)) {
@@ -314,10 +460,21 @@ async function refreshLiveQuotes() {
       };
     });
 
+    liveQuoteFailureCount = 0;
     renderTable();
     renderDetails(stocks.find((stock) => stock.ticker === selectedTicker));
     updateStatus(`Live quotes synced: ${updated}/${stocks.length} symbols at ${new Date().toLocaleTimeString()}.`);
   } catch (error) {
+    liveQuoteFailureCount += 1;
+    const isNetworkOrCorsIssue = error instanceof TypeError;
+
+    if (isNetworkOrCorsIssue) {
+      updateStatus(
+        `Live quote request blocked in this browser/session (attempt ${liveQuoteFailureCount}). Retrying automatically.`
+      );
+      return;
+    }
+
     updateStatus(`Live quote sync failed (${error.message}). Retrying automatically.`);
   }
 }
@@ -325,8 +482,12 @@ async function refreshLiveQuotes() {
 async function init() {
   try {
     await loadDataset();
-    updateStatus("Dataset loaded. Waiting for live quote sync...");
-    await refreshLiveQuotes();
+    if (!stocks.length) {
+      updateStatus("No symbols found from SEC scans or local dataset yet. Monitoring continues automatically.");
+    } else {
+      updateStatus("Dataset loaded. Waiting for live quote sync...");
+      await refreshLiveQuotes();
+    }
   } catch (error) {
     updateStatus(`Unable to initialize data: ${error.message}`);
   }
