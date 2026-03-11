@@ -172,6 +172,24 @@ function inferReasonFromText(text) {
   return "Elevated listing-compliance risk";
 }
 
+function shouldIncludeFilingForQuery(query, filing) {
+  const haystack = `${filing.title} ${filing.summary}`.toLowerCase();
+  const keywordMatch = query.keywords.some((keyword) => haystack.includes(keyword));
+  if (keywordMatch) return true;
+
+  const formType = (filing.formType || "").toUpperCase();
+
+  // Some form types are intrinsically delisting-risk signals even without keyword matches.
+  if (query.reason === "Notice of delisting" && ["25", "25-NSE"].includes(formType)) {
+    return true;
+  }
+  if (query.reason === "Late SEC filing (10-K / 10-Q)" && ["NT 10-K", "NT 10-Q"].includes(formType)) {
+    return true;
+  }
+
+  return false;
+}
+
 function extractTickerFromText(text) {
   if (!text) return null;
 
@@ -303,13 +321,11 @@ async function fetchSecRecentFilingsForQuery(query) {
       const company = entry.querySelector("conformed-name")?.textContent?.trim() || "";
       const filedDate = entry.querySelector("filing-date")?.textContent?.trim() || "";
       const link = entry.querySelector("link")?.getAttribute("href") || "";
+      const formType = entry.querySelector("category")?.getAttribute("term")?.trim() || "";
 
-      return { title, summary, company, filedDate, link };
+      return { title, summary, company, filedDate, link, formType };
     })
-    .filter((filing) => {
-      const haystack = `${filing.title} ${filing.summary}`.toLowerCase();
-      return query.keywords.some((keyword) => haystack.includes(keyword));
-    });
+    .filter((filing) => shouldIncludeFilingForQuery(query, filing));
 }
 
 async function discoverStocksFromSecFilings() {
