@@ -2,6 +2,11 @@ const DATA_URL = "data/stocks.json";
 const LIVE_QUOTE_REFRESH_MS = 60_000;
 const DATA_REFRESH_MS = 900_000;
 const SEC_MAX_ENTRIES_PER_QUERY = 40;
+const SEC_CORS_PROXIES = [
+  (url) => `/api/sec-proxy?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+];
 
 const SEC_DISCOVERY_QUERIES = [
   {
@@ -47,6 +52,18 @@ let sortDir = "desc";
 let dataGeneratedAt = null;
 let liveQuoteSyncEnabled = true;
 let liveQuoteTimerId = null;
+const cikTickerCache = new Map();
+
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
 
 function isSafeExternalUrl(value) {
   try {
@@ -170,9 +187,45 @@ function extractTickerFromText(text) {
   return null;
 }
 
-function buildStockFromFiling(filing) {
+function extractCikFromSecLink(link) {
+  if (!link) return null;
+  const match = link.match(/\/data\/(\d{1,10})\//);
+  return match ? match[1].padStart(10, "0") : null;
+}
+
+async function fetchTickerForCik(cik) {
+  if (!cik) return null;
+  if (cikTickerCache.has(cik)) return cikTickerCache.get(cik);
+
+  const dataUrl = `https://data.sec.gov/submissions/CIK${cik}.json`;
+  const candidateUrls = [...SEC_CORS_PROXIES.map((buildProxyUrl) => buildProxyUrl(dataUrl)), dataUrl];
+
+  for (const candidateUrl of candidateUrls) {
+    try {
+      const response = await fetchWithTimeout(candidateUrl);
+      if (!response.ok) continue;
+      const payload = await response.json();
+      const ticker = (payload?.tickers || [])[0] || null;
+      if (ticker) {
+        cikTickerCache.set(cik, ticker.toUpperCase());
+        return ticker.toUpperCase();
+      }
+    } catch (_error) {
+      // Continue trying alternate URLs/proxies.
+    }
+  }
+
+  cikTickerCache.set(cik, null);
+  return null;
+}
+
+async function buildStockFromFiling(filing) {
   const filingText = `${filing.title} ${filing.summary}`;
-  const ticker = extractTickerFromText(filingText);
+  let ticker = extractTickerFromText(filingText);
+  if (!ticker) {
+    const cik = extractCikFromSecLink(filing.link);
+    ticker = await fetchTickerForCik(cik);
+  }
   if (!ticker) return null;
 
   return normalizeStock({
@@ -194,29 +247,56 @@ function buildStockFromFiling(filing) {
 }
 
 async function fetchSecRecentFilingsForQuery(query) {
-  const url = new URL("https://www.sec.gov/cgi-bin/browse-edgar");
-  url.searchParams.set("action", "getcurrent");
-  url.searchParams.set("owner", "include");
-  url.searchParams.set("count", String(SEC_MAX_ENTRIES_PER_QUERY));
-  url.searchParams.set("output", "atom");
-  url.searchParams.set("type", query.forms);
+  const formTypes = query.forms.split(",").map((form) => form.trim()).filter(Boolean);
+  const allEntries = [];
 
-  const response = await fetch(url.toString());
-  if (!response.ok) {
-    throw new Error(`SEC feed request failed (${response.status}) for ${query.label}`);
+  for (const formType of formTypes) {
+    const url = new URL("https://www.sec.gov/cgi-bin/browse-edgar");
+    url.searchParams.set("action", "getcurrent");
+    url.searchParams.set("owner", "include");
+    url.searchParams.set("count", String(SEC_MAX_ENTRIES_PER_QUERY));
+    url.searchParams.set("output", "atom");
+    url.searchParams.set("type", formType);
+
+    const targetUrl = url.toString();
+    const candidateUrls = [...SEC_CORS_PROXIES.map((buildProxyUrl) => buildProxyUrl(targetUrl)), targetUrl];
+
+    let xmlText = "";
+    let lastError = null;
+
+    for (const candidateUrl of candidateUrls) {
+      try {
+        const response = await fetchWithTimeout(candidateUrl);
+        if (!response.ok) {
+          lastError = new Error(`status ${response.status}`);
+          continue;
+        }
+        xmlText = await response.text();
+        if (xmlText.trim()) {
+          break;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (!xmlText.trim()) {
+      const detail = lastError instanceof Error ? lastError.message : "unknown error";
+      throw new Error(`SEC feed request failed for ${query.label} (${formType}): ${detail}`);
+    }
+
+    const parser = new DOMParser();
+    const xml = parser.parseFromString(xmlText, "application/xml");
+    const parseError = xml.querySelector("parsererror");
+    if (parseError) {
+      throw new Error(`SEC feed parse error for ${query.label} (${formType})`);
+    }
+
+    const entries = Array.from(xml.querySelectorAll("entry"));
+    allEntries.push(...entries);
   }
 
-  const xmlText = await response.text();
-  const parser = new DOMParser();
-  const xml = parser.parseFromString(xmlText, "application/xml");
-  const parseError = xml.querySelector("parsererror");
-  if (parseError) {
-    throw new Error(`SEC feed parse error for ${query.label}`);
-  }
-
-  const entries = Array.from(xml.querySelectorAll("entry"));
-
-  return entries
+  return allEntries
     .map((entry) => {
       const title = entry.querySelector("title")?.textContent?.trim() || "";
       const summary = entry.querySelector("summary")?.textContent?.trim() || "";
@@ -238,7 +318,7 @@ async function discoverStocksFromSecFilings() {
   for (const query of SEC_DISCOVERY_QUERIES) {
     const filings = await fetchSecRecentFilingsForQuery(query);
     for (const filing of filings) {
-      const stock = buildStockFromFiling(filing);
+      const stock = await buildStockFromFiling(filing);
       if (stock) byTicker.set(stock.ticker, stock);
     }
   }
@@ -461,7 +541,6 @@ async function refreshLiveQuotes() {
       };
     });
 
-    liveQuoteFailureCount = 0;
     renderTable();
     renderDetails(stocks.find((stock) => stock.ticker === selectedTicker));
     updateStatus(`Live quotes synced: ${updated}/${stocks.length} symbols at ${new Date().toLocaleTimeString()}.`);

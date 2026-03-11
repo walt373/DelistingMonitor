@@ -7,10 +7,12 @@ The default dataset is intentionally empty so no demo symbols are preloaded. Add
 ## Run locally
 
 ```bash
-python3 -m http.server 4173
+node server.js
 ```
 
 Open: <http://localhost:4173/index.html>
+
+> Why this server? It includes a lightweight `/api/sec-proxy` endpoint that adds an SEC-compliant `User-Agent` and avoids browser CORS blocking when the dashboard fetches SEC data.
 
 ## Host on GitHub Pages
 
