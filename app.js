@@ -267,7 +267,6 @@ async function buildStockFromFiling(filing) {
 async function fetchSecRecentFilingsForQuery(query) {
   const formTypes = query.forms.split(",").map((form) => form.trim()).filter(Boolean);
   const allEntries = [];
-  const formErrors = [];
 
   for (const formType of formTypes) {
     const url = new URL("https://www.sec.gov/cgi-bin/browse-edgar");
@@ -301,24 +300,18 @@ async function fetchSecRecentFilingsForQuery(query) {
 
     if (!xmlText.trim()) {
       const detail = lastError instanceof Error ? lastError.message : "unknown error";
-      formErrors.push(`SEC feed request failed for ${query.label} (${formType}): ${detail}`);
-      continue;
+      throw new Error(`SEC feed request failed for ${query.label} (${formType}): ${detail}`);
     }
 
     const parser = new DOMParser();
     const xml = parser.parseFromString(xmlText, "application/xml");
     const parseError = xml.querySelector("parsererror");
     if (parseError) {
-      formErrors.push(`SEC feed parse error for ${query.label} (${formType})`);
-      continue;
+      throw new Error(`SEC feed parse error for ${query.label} (${formType})`);
     }
 
     const entries = Array.from(xml.querySelectorAll("entry"));
     allEntries.push(...entries);
-  }
-
-  if (!allEntries.length && formErrors.length) {
-    throw new Error(formErrors[0]);
   }
 
   return allEntries
@@ -340,14 +333,10 @@ async function discoverStocksFromSecFilings() {
   const warnings = [];
 
   for (const query of SEC_DISCOVERY_QUERIES) {
-    try {
-      const filings = await fetchSecRecentFilingsForQuery(query);
-      for (const filing of filings) {
-        const stock = await buildStockFromFiling(filing);
-        if (stock) byTicker.set(stock.ticker, stock);
-      }
-    } catch (error) {
-      warnings.push(error instanceof Error ? error.message : String(error));
+    const filings = await fetchSecRecentFilingsForQuery(query);
+    for (const filing of filings) {
+      const stock = await buildStockFromFiling(filing);
+      if (stock) byTicker.set(stock.ticker, stock);
     }
   }
 
