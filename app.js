@@ -330,6 +330,7 @@ async function fetchSecRecentFilingsForQuery(query) {
 
 async function discoverStocksFromSecFilings() {
   const byTicker = new Map();
+  const warnings = [];
 
   for (const query of SEC_DISCOVERY_QUERIES) {
     const filings = await fetchSecRecentFilingsForQuery(query);
@@ -339,7 +340,7 @@ async function discoverStocksFromSecFilings() {
     }
   }
 
-  return Array.from(byTicker.values());
+  return { stocks: Array.from(byTicker.values()), warnings };
 }
 
 function populateReasonOptions() {
@@ -502,14 +503,17 @@ async function loadDataset() {
   stocks = (payload.stocks || []).map(normalizeStock);
 
   try {
-    const discoveredStocks = await discoverStocksFromSecFilings();
+    const { stocks: discoveredStocks, warnings } = await discoverStocksFromSecFilings();
     if (discoveredStocks.length) {
       const seeded = new Map(stocks.map((stock) => [stock.ticker, stock]));
       for (const stock of discoveredStocks) {
         seeded.set(stock.ticker, { ...stock, ...(seeded.get(stock.ticker) || {}) });
       }
       stocks = Array.from(seeded.values());
-      updateStatus(`SEC scan found ${discoveredStocks.length} symbols from recent filing queries.`);
+      const warningSuffix = warnings.length ? ` (${warnings.length} SEC sub-query failures ignored).` : "";
+      updateStatus(`SEC scan found ${discoveredStocks.length} symbols from recent filing queries.${warningSuffix}`);
+    } else if (warnings.length) {
+      updateStatus(`SEC scan found 0 symbols (${warnings[0]}). Using dataset values.`);
     }
   } catch (error) {
     updateStatus(`SEC filing scan failed (${error.message}). Using local dataset values.`);
