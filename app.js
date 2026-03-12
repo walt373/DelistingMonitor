@@ -2,6 +2,11 @@ const DATA_URL = "data/stocks.json";
 const LIVE_QUOTE_REFRESH_MS = 60_000;
 const DATA_REFRESH_MS = 900_000;
 const SEC_MAX_ENTRIES_PER_QUERY = 40;
+const SEC_CORS_PROXIES = [
+  (url) => `/api/sec-proxy?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+];
 
 const SEC_DISCOVERY_QUERIES = [
   {
@@ -47,6 +52,18 @@ let sortDir = "desc";
 let dataGeneratedAt = null;
 let liveQuoteSyncEnabled = true;
 let liveQuoteTimerId = null;
+const cikTickerCache = new Map();
+
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
 
 function isSafeExternalUrl(value) {
   try {
@@ -155,6 +172,24 @@ function inferReasonFromText(text) {
   return "Elevated listing-compliance risk";
 }
 
+function shouldIncludeFilingForQuery(query, filing) {
+  const haystack = `${filing.title} ${filing.summary}`.toLowerCase();
+  const keywordMatch = query.keywords.some((keyword) => haystack.includes(keyword));
+  if (keywordMatch) return true;
+
+  const formType = (filing.formType || "").toUpperCase();
+
+  // Some form types are intrinsically delisting-risk signals even without keyword matches.
+  if (query.reason === "Notice of delisting" && ["25", "25-NSE"].includes(formType)) {
+    return true;
+  }
+  if (query.reason === "Late SEC filing (10-K / 10-Q)" && ["NT 10-K", "NT 10-Q"].includes(formType)) {
+    return true;
+  }
+
+  return false;
+}
+
 function extractTickerFromText(text) {
   if (!text) return null;
 
@@ -170,9 +205,45 @@ function extractTickerFromText(text) {
   return null;
 }
 
-function buildStockFromFiling(filing) {
+function extractCikFromSecLink(link) {
+  if (!link) return null;
+  const match = link.match(/\/data\/(\d{1,10})\//);
+  return match ? match[1].padStart(10, "0") : null;
+}
+
+async function fetchTickerForCik(cik) {
+  if (!cik) return null;
+  if (cikTickerCache.has(cik)) return cikTickerCache.get(cik);
+
+  const dataUrl = `https://data.sec.gov/submissions/CIK${cik}.json`;
+  const candidateUrls = [...SEC_CORS_PROXIES.map((buildProxyUrl) => buildProxyUrl(dataUrl)), dataUrl];
+
+  for (const candidateUrl of candidateUrls) {
+    try {
+      const response = await fetchWithTimeout(candidateUrl);
+      if (!response.ok) continue;
+      const payload = await response.json();
+      const ticker = (payload?.tickers || [])[0] || null;
+      if (ticker) {
+        cikTickerCache.set(cik, ticker.toUpperCase());
+        return ticker.toUpperCase();
+      }
+    } catch (_error) {
+      // Continue trying alternate URLs/proxies.
+    }
+  }
+
+  cikTickerCache.set(cik, null);
+  return null;
+}
+
+async function buildStockFromFiling(filing) {
   const filingText = `${filing.title} ${filing.summary}`;
-  const ticker = extractTickerFromText(filingText);
+  let ticker = extractTickerFromText(filingText);
+  if (!ticker) {
+    const cik = extractCikFromSecLink(filing.link);
+    ticker = await fetchTickerForCik(cik);
+  }
   if (!ticker) return null;
 
   return normalizeStock({
@@ -194,56 +265,93 @@ function buildStockFromFiling(filing) {
 }
 
 async function fetchSecRecentFilingsForQuery(query) {
-  const url = new URL("https://www.sec.gov/cgi-bin/browse-edgar");
-  url.searchParams.set("action", "getcurrent");
-  url.searchParams.set("owner", "include");
-  url.searchParams.set("count", String(SEC_MAX_ENTRIES_PER_QUERY));
-  url.searchParams.set("output", "atom");
-  url.searchParams.set("type", query.forms);
+  const formTypes = query.forms.split(",").map((form) => form.trim()).filter(Boolean);
+  const allEntries = [];
+  const formErrors = [];
 
-  const response = await fetch(url.toString());
-  if (!response.ok) {
-    throw new Error(`SEC feed request failed (${response.status}) for ${query.label}`);
+  for (const formType of formTypes) {
+    const url = new URL("https://www.sec.gov/cgi-bin/browse-edgar");
+    url.searchParams.set("action", "getcurrent");
+    url.searchParams.set("owner", "include");
+    url.searchParams.set("count", String(SEC_MAX_ENTRIES_PER_QUERY));
+    url.searchParams.set("output", "atom");
+    url.searchParams.set("type", formType);
+
+    const targetUrl = url.toString();
+    const candidateUrls = [...SEC_CORS_PROXIES.map((buildProxyUrl) => buildProxyUrl(targetUrl)), targetUrl];
+
+    let xmlText = "";
+    let lastError = null;
+
+    for (const candidateUrl of candidateUrls) {
+      try {
+        const response = await fetchWithTimeout(candidateUrl);
+        if (!response.ok) {
+          lastError = new Error(`status ${response.status}`);
+          continue;
+        }
+        xmlText = await response.text();
+        if (xmlText.trim()) {
+          break;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (!xmlText.trim()) {
+      const detail = lastError instanceof Error ? lastError.message : "unknown error";
+      formErrors.push(`SEC feed request failed for ${query.label} (${formType}): ${detail}`);
+      continue;
+    }
+
+    const parser = new DOMParser();
+    const xml = parser.parseFromString(xmlText, "application/xml");
+    const parseError = xml.querySelector("parsererror");
+    if (parseError) {
+      formErrors.push(`SEC feed parse error for ${query.label} (${formType})`);
+      continue;
+    }
+
+    const entries = Array.from(xml.querySelectorAll("entry"));
+    allEntries.push(...entries);
   }
 
-  const xmlText = await response.text();
-  const parser = new DOMParser();
-  const xml = parser.parseFromString(xmlText, "application/xml");
-  const parseError = xml.querySelector("parsererror");
-  if (parseError) {
-    throw new Error(`SEC feed parse error for ${query.label}`);
+  if (!allEntries.length && formErrors.length) {
+    throw new Error(formErrors[0]);
   }
 
-  const entries = Array.from(xml.querySelectorAll("entry"));
-
-  return entries
+  return allEntries
     .map((entry) => {
       const title = entry.querySelector("title")?.textContent?.trim() || "";
       const summary = entry.querySelector("summary")?.textContent?.trim() || "";
       const company = entry.querySelector("conformed-name")?.textContent?.trim() || "";
       const filedDate = entry.querySelector("filing-date")?.textContent?.trim() || "";
       const link = entry.querySelector("link")?.getAttribute("href") || "";
+      const formType = entry.querySelector("category")?.getAttribute("term")?.trim() || "";
 
-      return { title, summary, company, filedDate, link };
+      return { title, summary, company, filedDate, link, formType };
     })
-    .filter((filing) => {
-      const haystack = `${filing.title} ${filing.summary}`.toLowerCase();
-      return query.keywords.some((keyword) => haystack.includes(keyword));
-    });
+    .filter((filing) => shouldIncludeFilingForQuery(query, filing));
 }
 
 async function discoverStocksFromSecFilings() {
   const byTicker = new Map();
+  const warnings = [];
 
   for (const query of SEC_DISCOVERY_QUERIES) {
-    const filings = await fetchSecRecentFilingsForQuery(query);
-    for (const filing of filings) {
-      const stock = buildStockFromFiling(filing);
-      if (stock) byTicker.set(stock.ticker, stock);
+    try {
+      const filings = await fetchSecRecentFilingsForQuery(query);
+      for (const filing of filings) {
+        const stock = await buildStockFromFiling(filing);
+        if (stock) byTicker.set(stock.ticker, stock);
+      }
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : String(error));
     }
   }
 
-  return Array.from(byTicker.values());
+  return { stocks: Array.from(byTicker.values()), warnings };
 }
 
 function populateReasonOptions() {
@@ -406,14 +514,17 @@ async function loadDataset() {
   stocks = (payload.stocks || []).map(normalizeStock);
 
   try {
-    const discoveredStocks = await discoverStocksFromSecFilings();
+    const { stocks: discoveredStocks, warnings } = await discoverStocksFromSecFilings();
     if (discoveredStocks.length) {
       const seeded = new Map(stocks.map((stock) => [stock.ticker, stock]));
       for (const stock of discoveredStocks) {
         seeded.set(stock.ticker, { ...stock, ...(seeded.get(stock.ticker) || {}) });
       }
       stocks = Array.from(seeded.values());
-      updateStatus(`SEC scan found ${discoveredStocks.length} symbols from recent filing queries.`);
+      const warningSuffix = warnings.length ? ` (${warnings.length} SEC sub-query failures ignored).` : "";
+      updateStatus(`SEC scan found ${discoveredStocks.length} symbols from recent filing queries.${warningSuffix}`);
+    } else if (warnings.length) {
+      updateStatus(`SEC scan found 0 symbols (${warnings[0]}). Using dataset values.`);
     }
   } catch (error) {
     updateStatus(`SEC filing scan failed (${error.message}). Using local dataset values.`);
@@ -461,7 +572,6 @@ async function refreshLiveQuotes() {
       };
     });
 
-    liveQuoteFailureCount = 0;
     renderTable();
     renderDetails(stocks.find((stock) => stock.ticker === selectedTicker));
     updateStatus(`Live quotes synced: ${updated}/${stocks.length} symbols at ${new Date().toLocaleTimeString()}.`);
