@@ -8,6 +8,14 @@ const SEC_CORS_PROXIES = [
   (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
 ];
 const MARKET_DATA_PROXY = (url) => `/api/market-proxy?url=${encodeURIComponent(url)}`;
+const NASDAQ_SUMMARY_URL = (symbol) => `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/summary?assetclass=stocks`;
+
+const {
+  computeOptionIvFromChain,
+  firstFinite,
+  parseNasdaqQuoteSummary,
+  readRawValue,
+} = window.MarketDataUtils;
 
 const SEC_DISCOVERY_QUERIES = [
   {
@@ -593,31 +601,34 @@ async function loadDataset() {
 
 async function refreshLiveQuotes() {
   if (!stocks.length || !liveQuoteSyncEnabled) return;
-  const symbols = stocks.map((stock) => stock.ticker).join(",");
+  const symbols = stocks.map((stock) => stock.ticker);
 
   try {
-    const response = await fetch(MARKET_DATA_PROXY(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`), {
-      cache: "no-store",
-    });
-    if (!response.ok) {
-      throw new Error(`Quote API returned ${response.status}`);
+    let yahooError = null;
+    let yahooQuotes = new Map();
+
+    try {
+      yahooQuotes = await fetchYahooBatchQuotes(symbols);
+    } catch (error) {
+      yahooError = error;
     }
 
-    const payload = await response.json();
-    const quotes = payload?.quoteResponse?.result || [];
-    const bySymbol = new Map(quotes.map((quote) => [quote.symbol, quote]));
-
+    const missingSymbols = [];
     let updated = 0;
+
     stocks = stocks.map((stock) => {
-      const quote = bySymbol.get(stock.ticker);
-      if (!quote) return stock;
+      const quote = yahooQuotes.get(stock.ticker);
+      if (!quote) {
+        missingSymbols.push(stock.ticker);
+        return stock;
+      }
 
       updated += 1;
       const avgVolume = Number.isFinite(quote.averageDailyVolume3Month)
         ? quote.averageDailyVolume3Month
         : quote.regularMarketVolume;
 
-      return {
+      const nextStock = {
         ...stock,
         price: Number.isFinite(quote.regularMarketPrice) ? quote.regularMarketPrice : stock.price,
         marketCap: Number.isFinite(quote.marketCap) ? quote.marketCap : stock.marketCap,
@@ -626,7 +637,45 @@ async function refreshLiveQuotes() {
           ? new Date(quote.regularMarketTime * 1000).toISOString()
           : stock.dataAsOf,
       };
+
+      if (!Number.isFinite(nextStock.price) || !Number.isFinite(nextStock.marketCap)) {
+        missingSymbols.push(stock.ticker);
+      }
+
+      return nextStock;
     });
+
+    let nasdaqUpdated = 0;
+    if (missingSymbols.length) {
+      const uniqueMissingSymbols = [...new Set(missingSymbols)];
+      const fallbackResults = await Promise.allSettled(uniqueMissingSymbols.map((symbol) => fetchNasdaqQuote(symbol)));
+      const fallbackBySymbol = new Map(
+        uniqueMissingSymbols.map((symbol, index) => [symbol, fallbackResults[index]])
+      );
+
+      stocks = stocks.map((stock) => {
+        const result = fallbackBySymbol.get(stock.ticker);
+        if (!result || result.status !== "fulfilled" || !result.value) return stock;
+
+        const nextStock = {
+          ...stock,
+          price: Number.isFinite(stock.price) ? stock.price : result.value.price,
+          marketCap: Number.isFinite(stock.marketCap) ? stock.marketCap : result.value.marketCap,
+          avgVolume: Number.isFinite(stock.avgVolume) ? stock.avgVolume : result.value.avgVolume,
+          dataAsOf: stock.dataAsOf || result.value.dataAsOf || stock.dataAsOf,
+        };
+
+        if (
+          nextStock.price !== stock.price ||
+          nextStock.marketCap !== stock.marketCap ||
+          nextStock.avgVolume !== stock.avgVolume
+        ) {
+          nasdaqUpdated += 1;
+        }
+
+        return nextStock;
+      });
+    }
 
     const enrichmentTargets = stocks.filter(
       (stock) =>
@@ -661,7 +710,15 @@ async function refreshLiveQuotes() {
 
     renderTable();
     renderDetails(stocks.find((stock) => stock.ticker === selectedTicker));
-    updateStatus(`Live quotes synced: ${updated}/${stocks.length} symbols at ${new Date().toLocaleTimeString()}.`);
+
+    if (!updated && !nasdaqUpdated && yahooError) {
+      throw yahooError;
+    }
+
+    const sourceSummary = nasdaqUpdated
+      ? ` Yahoo updated ${updated}/${stocks.length}; Nasdaq fallback filled ${nasdaqUpdated}.`
+      : ` Yahoo updated ${updated}/${stocks.length}.`;
+    updateStatus(`Live quotes synced at ${new Date().toLocaleTimeString()}.${sourceSummary}`);
   } catch (error) {
     const isNetworkOrCorsIssue = error instanceof TypeError;
     if (isNetworkOrCorsIssue) {
@@ -680,27 +737,25 @@ async function refreshLiveQuotes() {
   }
 }
 
-function readRawValue(value) {
-  if (typeof value === "number") return value;
-  if (value && typeof value.raw === "number") return value.raw;
-  return Number.NaN;
+async function fetchJsonFromMarketProxy(url, timeoutMs = 8000) {
+  const response = await fetchWithTimeout(MARKET_DATA_PROXY(url), { cache: "no-store" }, timeoutMs);
+  if (!response.ok) {
+    throw new Error(`Market data request failed (${response.status})`);
+  }
+  return response.json();
 }
 
-function firstFinite(...values) {
-  return values.find((value) => Number.isFinite(value)) ?? Number.NaN;
+async function fetchYahooBatchQuotes(symbols) {
+  const payload = await fetchJsonFromMarketProxy(
+    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols.join(","))}`
+  );
+  const quotes = payload?.quoteResponse?.result || [];
+  return new Map(quotes.map((quote) => [quote.symbol, quote]));
 }
 
-function computeOptionIvFromChain(chain = {}) {
-  const options = chain?.optionChain?.result?.[0]?.options?.[0];
-  if (!options) return Number.NaN;
-
-  const ivValues = [...(options.calls || []), ...(options.puts || [])]
-    .map((contract) => readRawValue(contract.impliedVolatility))
-    .filter((value) => Number.isFinite(value) && value > 0 && value < 10);
-
-  if (!ivValues.length) return Number.NaN;
-  const average = ivValues.reduce((sum, value) => sum + value, 0) / ivValues.length;
-  return average * 100;
+async function fetchNasdaqQuote(symbol) {
+  const payload = await fetchJsonFromMarketProxy(NASDAQ_SUMMARY_URL(symbol));
+  return parseNasdaqQuoteSummary(payload);
 }
 
 async function fetchMarketDetails(symbol) {
@@ -709,29 +764,31 @@ async function fetchMarketDetails(symbol) {
     "?modules=price,summaryDetail,defaultKeyStatistics,financialData";
   const optionsUrl = `https://query1.finance.yahoo.com/v7/finance/options/${encodeURIComponent(symbol)}`;
 
-  const [summaryResponse, optionsResponse] = await Promise.allSettled([
-    fetch(MARKET_DATA_PROXY(quoteSummaryUrl), { cache: "no-store" }),
-    fetch(MARKET_DATA_PROXY(optionsUrl), { cache: "no-store" }),
+  const [summaryPayload, optionsPayload, nasdaqPayload] = await Promise.all([
+    fetchJsonFromMarketProxy(quoteSummaryUrl).catch(() => null),
+    fetchJsonFromMarketProxy(optionsUrl).catch(() => null),
+    fetchJsonFromMarketProxy(NASDAQ_SUMMARY_URL(symbol)).catch(() => null),
   ]);
-
-  const summaryPayload =
-    summaryResponse.status === "fulfilled" && summaryResponse.value.ok ? await summaryResponse.value.json() : null;
-  const optionsPayload =
-    optionsResponse.status === "fulfilled" && optionsResponse.value.ok ? await optionsResponse.value.json() : null;
 
   const result = summaryPayload?.quoteSummary?.result?.[0] || {};
   const price = result.price || {};
   const summaryDetail = result.summaryDetail || {};
   const defaultKeyStatistics = result.defaultKeyStatistics || {};
   const financialData = result.financialData || {};
+  const nasdaqFallback = parseNasdaqQuoteSummary(nasdaqPayload);
 
   return {
-    price: firstFinite(readRawValue(price.regularMarketPrice), readRawValue(financialData.currentPrice)),
-    marketCap: readRawValue(price.marketCap),
+    price: firstFinite(
+      readRawValue(price.regularMarketPrice),
+      readRawValue(financialData.currentPrice),
+      nasdaqFallback.price
+    ),
+    marketCap: firstFinite(readRawValue(price.marketCap), nasdaqFallback.marketCap),
     avgVolume: firstFinite(
       readRawValue(summaryDetail.averageVolume),
       readRawValue(summaryDetail.averageVolume10days),
-      readRawValue(summaryDetail.volume)
+      readRawValue(summaryDetail.volume),
+      nasdaqFallback.avgVolume
     ),
     shortBorrowCost: firstFinite(
       readRawValue(summaryDetail.borrowFee),
@@ -739,7 +796,7 @@ async function fetchMarketDetails(symbol) {
       readRawValue(defaultKeyStatistics.shortPercentOfFloat)
     ),
     optionIV: computeOptionIvFromChain(optionsPayload),
-    dataAsOf: new Date().toISOString(),
+    dataAsOf: nasdaqFallback.dataAsOf || new Date().toISOString(),
   };
 }
 
