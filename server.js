@@ -1,4 +1,7 @@
 const http = require('http');
+const https = require('https');
+const zlib = require('zlib');
+const dns = require('dns');
 const fs = require('fs');
 const path = require('path');
 
@@ -38,6 +41,48 @@ function serveStatic(req, res) {
   });
 }
 
+function fetchRemote(url, headers = {}, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    const client = url.protocol === 'https:' ? https : http;
+    const req = client.request(url, {
+      method: 'GET',
+      headers,
+      timeout: 12000,
+      family: 4,
+      lookup(hostname, options, callback) {
+        return dns.lookup(hostname, { ...options, family: 4, all: false }, callback);
+      },
+    }, (upstream) => {
+      const statusCode = upstream.statusCode || 502;
+      const location = upstream.headers.location;
+      if (location && statusCode >= 300 && statusCode < 400 && redirectCount < 4) {
+        upstream.resume();
+        resolve(fetchRemote(new URL(location, url), headers, redirectCount + 1));
+        return;
+      }
+
+      let stream = upstream;
+      const encoding = String(upstream.headers['content-encoding'] || '').toLowerCase();
+      if (encoding.includes('gzip')) stream = upstream.pipe(zlib.createGunzip());
+      else if (encoding.includes('deflate')) stream = upstream.pipe(zlib.createInflate());
+      else if (encoding.includes('br')) stream = upstream.pipe(zlib.createBrotliDecompress());
+
+      const chunks = [];
+      stream.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      stream.on('end', () => resolve({
+        status: statusCode,
+        headers: upstream.headers,
+        body: Buffer.concat(chunks),
+      }));
+      stream.on('error', reject);
+    });
+
+    req.on('timeout', () => req.destroy(new Error('Upstream request timed out')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 async function handleSecProxy(req, res, url) {
   const target = url.searchParams.get('url');
   if (!target) return sendJson(res, 400, { error: 'Missing url parameter' });
@@ -54,19 +99,16 @@ async function handleSecProxy(req, res, url) {
   }
 
   try {
-    const upstream = await fetch(parsed.toString(), {
-      headers: {
-        'User-Agent': 'DelistingMonitor/1.0 (contact: local-dev@example.com)',
-        'Accept-Encoding': 'gzip, deflate',
-      },
+    const upstream = await fetchRemote(parsed, {
+      'User-Agent': 'DelistingMonitor/1.0 (contact: local-dev@example.com)',
+      'Accept-Encoding': 'gzip, deflate, br',
     });
-    const text = await upstream.text();
     res.writeHead(upstream.status, {
-      'Content-Type': upstream.headers.get('content-type') || 'text/plain; charset=utf-8',
+      'Content-Type': upstream.headers['content-type'] || 'text/plain; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'no-store'
     });
-    res.end(text);
+    res.end(upstream.body);
   } catch (error) {
     sendJson(res, 502, { error: String(error) });
   }
@@ -83,25 +125,24 @@ async function handleMarketProxy(req, res, url) {
     return sendJson(res, 400, { error: 'Invalid target url' });
   }
 
-  if (!['query1.finance.yahoo.com', 'query2.finance.yahoo.com'].includes(parsed.hostname)) {
+  if (!['query1.finance.yahoo.com', 'query2.finance.yahoo.com', 'api.nasdaq.com'].includes(parsed.hostname)) {
     return sendJson(res, 400, { error: 'Only approved finance hosts are allowed' });
   }
 
   try {
-    const upstream = await fetch(parsed.toString(), {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; DelistingMonitor/1.0)',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Encoding': 'gzip, deflate',
-      },
+    const upstream = await fetchRemote(parsed, {
+      'User-Agent': 'Mozilla/5.0 (compatible; DelistingMonitor/1.0)',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Origin': 'https://www.nasdaq.com',
+      'Referer': 'https://www.nasdaq.com/',
     });
-    const text = await upstream.text();
     res.writeHead(upstream.status, {
-      'Content-Type': upstream.headers.get('content-type') || 'application/json; charset=utf-8',
+      'Content-Type': upstream.headers['content-type'] || 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'no-store'
     });
-    res.end(text);
+    res.end(upstream.body);
   } catch (error) {
     sendJson(res, 502, { error: String(error) });
   }
