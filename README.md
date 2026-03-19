@@ -12,7 +12,7 @@ node server.js
 
 Open: <http://localhost:4173/index.html>
 
-> Why this server? It includes a lightweight `/api/sec-proxy` endpoint that adds an SEC-compliant `User-Agent` and avoids browser CORS blocking when the dashboard fetches SEC data.
+> Why this server? It includes lightweight `/api/sec-proxy` and `/api/market-proxy` endpoints so the dashboard can fetch SEC and Yahoo Finance data without browser CORS blocking.
 
 ## Host on GitHub Pages
 
@@ -26,8 +26,8 @@ Open: <http://localhost:4173/index.html>
 
 - On page load, the app fetches `data/stocks.json`, then scans recent SEC current filings feeds using delisting-oriented query buckets (e.g., notice of delisting, late filings, bankruptcy/restructuring, listing non-compliance).
 - Symbols inferred from matching SEC filing entries are merged into the tracked universe automatically.
-- The app computes delisting reason, expected date, and risk score from each stock's `signals` values and inferred filing text.
-- It then polls Yahoo Finance quote data for tracked symbols and updates price, market cap, volume, and quote timestamp automatically every 60 seconds.
+- The app computes delisting reason, expected date, and risk score from each stock's `signals` values and inferred filing text, including more specific explanations such as minimum bid price below $1.00, overdue 10-K/10-Q filings, equity deficiency, and public-float issues when that language appears in the filing.
+- It then polls Yahoo Finance market data for tracked symbols and updates price, market cap, volume, borrow-related metrics, option IV, and quote timestamp automatically every 60 seconds.
 - The SEC scan + dataset refresh runs every 15 minutes so newly filed candidates can appear automatically.
 
 ## Data model
@@ -46,4 +46,3 @@ If a pull request shows **"invalid branch"** after accidental deletion, you can 
 1. Open the old PR and click **Restore branch** (if available).
 2. If restore is unavailable, go to **Pull requests → New pull request** and create a fresh PR from your latest branch into `main`.
 3. Add a note in the PR body that it replaces the broken PR so reviewers can continue quickly.
-

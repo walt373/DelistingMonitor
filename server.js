@@ -72,10 +72,49 @@ async function handleSecProxy(req, res, url) {
   }
 }
 
+async function handleMarketProxy(req, res, url) {
+  const target = url.searchParams.get('url');
+  if (!target) return sendJson(res, 400, { error: 'Missing url parameter' });
+
+  let parsed;
+  try {
+    parsed = new URL(target);
+  } catch {
+    return sendJson(res, 400, { error: 'Invalid target url' });
+  }
+
+  if (!['query1.finance.yahoo.com', 'query2.finance.yahoo.com'].includes(parsed.hostname)) {
+    return sendJson(res, 400, { error: 'Only approved finance hosts are allowed' });
+  }
+
+  try {
+    const upstream = await fetch(parsed.toString(), {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; DelistingMonitor/1.0)',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Encoding': 'gzip, deflate',
+      },
+    });
+    const text = await upstream.text();
+    res.writeHead(upstream.status, {
+      'Content-Type': upstream.headers.get('content-type') || 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-store'
+    });
+    res.end(text);
+  } catch (error) {
+    sendJson(res, 502, { error: String(error) });
+  }
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === '/api/sec-proxy') {
     handleSecProxy(req, res, url);
+    return;
+  }
+  if (url.pathname === '/api/market-proxy') {
+    handleMarketProxy(req, res, url);
     return;
   }
   serveStatic(req, res);
