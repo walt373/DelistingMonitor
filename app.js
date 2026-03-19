@@ -7,6 +7,7 @@ const SEC_CORS_PROXIES = [
   (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
 ];
+const MARKET_DATA_PROXY = (url) => `/api/market-proxy?url=${encodeURIComponent(url)}`;
 
 const SEC_DISCOVERY_QUERIES = [
   {
@@ -124,10 +125,10 @@ function riskLabel(chance) {
 
 function computeDelistReason(signals = {}) {
   if (signals.bankruptcyProceeding) return "Bankruptcy / restructuring proceedings";
-  if (signals.lateFilingsCount > 0) return "Late SEC filing (10-K / 10-Q)";
-  if (signals.equityDeficiency) return "Shareholder equity requirement breach";
+  if (signals.lateFilingsCount > 0) return "Late SEC filing notice (10-K / 10-Q overdue)";
+  if (signals.equityDeficiency) return "Notice of delisting: shareholder equity requirement breach";
   if (signals.governanceDeficiency) return "Corporate governance deficiency";
-  if (signals.bidBelowOneDollarDays > 30) return "Minimum bid price non-compliance";
+  if (signals.bidBelowOneDollarDays > 30) return "Notice of delisting: minimum bid price below $1.00";
   return "Elevated listing-compliance risk";
 }
 
@@ -164,11 +165,71 @@ function normalizeStock(rawStock) {
 
 function inferReasonFromText(text) {
   const normalized = text.toLowerCase();
+
+  if (
+    normalized.includes("minimum bid price") ||
+    normalized.includes("bid price below $1") ||
+    normalized.includes("below the minimum $1.00 bid price") ||
+    normalized.includes("closing bid price of below $1.00")
+  ) {
+    return "Notice of delisting: minimum bid price below $1.00";
+  }
+
+  if (
+    normalized.includes("market value of publicly held shares") ||
+    normalized.includes("publicly held shares requirement") ||
+    normalized.includes("market value of listed securities") ||
+    normalized.includes("public float")
+  ) {
+    return "Notice of delisting: market value / public float below exchange minimum";
+  }
+
+  if (
+    normalized.includes("stockholders' equity") ||
+    normalized.includes("shareholders' equity") ||
+    normalized.includes("equity deficiency")
+  ) {
+    return "Notice of delisting: shareholder equity below listing standard";
+  }
+
+  if (
+    normalized.includes("late filing") ||
+    normalized.includes("unable to file") ||
+    normalized.includes("notification of late filing") ||
+    normalized.includes("delinquent in filing")
+  ) {
+    if (normalized.includes("10-k")) return "Late SEC filing notice: Form 10-K overdue";
+    if (normalized.includes("10-q")) return "Late SEC filing notice: Form 10-Q overdue";
+    return "Late SEC filing notice (10-K / 10-Q overdue)";
+  }
+
+  if (
+    normalized.includes("bankruptcy") ||
+    normalized.includes("chapter 11") ||
+    normalized.includes("chapter 7") ||
+    normalized.includes("restructuring support agreement")
+  ) {
+    return "Bankruptcy / restructuring proceedings";
+  }
+
+  if (
+    normalized.includes("corporate governance") ||
+    normalized.includes("audit committee") ||
+    normalized.includes("board independence")
+  ) {
+    return "Notice of delisting: corporate governance deficiency";
+  }
+
+  if (normalized.includes("notice of delisting")) {
+    return "Notice of delisting: exchange deficiency cited in filing";
+  }
+
   for (const query of SEC_DISCOVERY_QUERIES) {
     if (query.keywords.some((keyword) => normalized.includes(keyword))) {
       return query.reason;
     }
   }
+
   return "Elevated listing-compliance risk";
 }
 
@@ -535,7 +596,9 @@ async function refreshLiveQuotes() {
   const symbols = stocks.map((stock) => stock.ticker).join(",");
 
   try {
-    const response = await fetch(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`);
+    const response = await fetch(MARKET_DATA_PROXY(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`), {
+      cache: "no-store",
+    });
     if (!response.ok) {
       throw new Error(`Quote API returned ${response.status}`);
     }
@@ -550,14 +613,49 @@ async function refreshLiveQuotes() {
       if (!quote) return stock;
 
       updated += 1;
+      const avgVolume = Number.isFinite(quote.averageDailyVolume3Month)
+        ? quote.averageDailyVolume3Month
+        : quote.regularMarketVolume;
+
       return {
         ...stock,
         price: Number.isFinite(quote.regularMarketPrice) ? quote.regularMarketPrice : stock.price,
         marketCap: Number.isFinite(quote.marketCap) ? quote.marketCap : stock.marketCap,
-        avgVolume: Number.isFinite(quote.regularMarketVolume) ? quote.regularMarketVolume : stock.avgVolume,
+        avgVolume: Number.isFinite(avgVolume) ? avgVolume : stock.avgVolume,
         dataAsOf: quote.regularMarketTime
           ? new Date(quote.regularMarketTime * 1000).toISOString()
           : stock.dataAsOf,
+      };
+    });
+
+    const enrichmentTargets = stocks.filter(
+      (stock) =>
+        stock.ticker === selectedTicker ||
+        !Number.isFinite(stock.shortBorrowCost) ||
+        !Number.isFinite(stock.optionIV)
+    );
+    const enrichmentResults = await Promise.allSettled(
+      enrichmentTargets.map((stock) => fetchMarketDetails(stock.ticker))
+    );
+    const enrichmentByTicker = new Map(
+      enrichmentTargets.map((stock, index) => [stock.ticker, enrichmentResults[index]])
+    );
+
+    stocks = stocks.map((stock) => {
+      const result = enrichmentByTicker.get(stock.ticker);
+      if (!result || result.status !== "fulfilled" || !result.value) return stock;
+
+      return {
+        ...stock,
+        ...result.value,
+        price: Number.isFinite(result.value.price) ? result.value.price : stock.price,
+        marketCap: Number.isFinite(result.value.marketCap) ? result.value.marketCap : stock.marketCap,
+        avgVolume: Number.isFinite(result.value.avgVolume) ? result.value.avgVolume : stock.avgVolume,
+        shortBorrowCost: Number.isFinite(result.value.shortBorrowCost)
+          ? result.value.shortBorrowCost
+          : stock.shortBorrowCost,
+        optionIV: Number.isFinite(result.value.optionIV) ? result.value.optionIV : stock.optionIV,
+        dataAsOf: result.value.dataAsOf || stock.dataAsOf,
       };
     });
 
@@ -580,6 +678,69 @@ async function refreshLiveQuotes() {
 
     updateStatus(`Live quote sync failed (${error.message}). Retrying automatically.`);
   }
+}
+
+function readRawValue(value) {
+  if (typeof value === "number") return value;
+  if (value && typeof value.raw === "number") return value.raw;
+  return Number.NaN;
+}
+
+function firstFinite(...values) {
+  return values.find((value) => Number.isFinite(value)) ?? Number.NaN;
+}
+
+function computeOptionIvFromChain(chain = {}) {
+  const options = chain?.optionChain?.result?.[0]?.options?.[0];
+  if (!options) return Number.NaN;
+
+  const ivValues = [...(options.calls || []), ...(options.puts || [])]
+    .map((contract) => readRawValue(contract.impliedVolatility))
+    .filter((value) => Number.isFinite(value) && value > 0 && value < 10);
+
+  if (!ivValues.length) return Number.NaN;
+  const average = ivValues.reduce((sum, value) => sum + value, 0) / ivValues.length;
+  return average * 100;
+}
+
+async function fetchMarketDetails(symbol) {
+  const quoteSummaryUrl =
+    `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}` +
+    "?modules=price,summaryDetail,defaultKeyStatistics,financialData";
+  const optionsUrl = `https://query1.finance.yahoo.com/v7/finance/options/${encodeURIComponent(symbol)}`;
+
+  const [summaryResponse, optionsResponse] = await Promise.allSettled([
+    fetch(MARKET_DATA_PROXY(quoteSummaryUrl), { cache: "no-store" }),
+    fetch(MARKET_DATA_PROXY(optionsUrl), { cache: "no-store" }),
+  ]);
+
+  const summaryPayload =
+    summaryResponse.status === "fulfilled" && summaryResponse.value.ok ? await summaryResponse.value.json() : null;
+  const optionsPayload =
+    optionsResponse.status === "fulfilled" && optionsResponse.value.ok ? await optionsResponse.value.json() : null;
+
+  const result = summaryPayload?.quoteSummary?.result?.[0] || {};
+  const price = result.price || {};
+  const summaryDetail = result.summaryDetail || {};
+  const defaultKeyStatistics = result.defaultKeyStatistics || {};
+  const financialData = result.financialData || {};
+
+  return {
+    price: firstFinite(readRawValue(price.regularMarketPrice), readRawValue(financialData.currentPrice)),
+    marketCap: readRawValue(price.marketCap),
+    avgVolume: firstFinite(
+      readRawValue(summaryDetail.averageVolume),
+      readRawValue(summaryDetail.averageVolume10days),
+      readRawValue(summaryDetail.volume)
+    ),
+    shortBorrowCost: firstFinite(
+      readRawValue(summaryDetail.borrowFee),
+      readRawValue(defaultKeyStatistics.borrowFee),
+      readRawValue(defaultKeyStatistics.shortPercentOfFloat)
+    ),
+    optionIV: computeOptionIvFromChain(optionsPayload),
+    dataAsOf: new Date().toISOString(),
+  };
 }
 
 async function init() {
