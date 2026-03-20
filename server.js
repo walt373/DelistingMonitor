@@ -1,7 +1,6 @@
 const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
-const dns = require('dns');
 const fs = require('fs');
 const path = require('path');
 
@@ -48,10 +47,6 @@ function fetchRemote(url, headers = {}, redirectCount = 0) {
       method: 'GET',
       headers,
       timeout: 12000,
-      family: 4,
-      lookup(hostname, options, callback) {
-        return dns.lookup(hostname, { ...options, family: 4, all: false }, callback);
-      },
     }, (upstream) => {
       const statusCode = upstream.statusCode || 502;
       const location = upstream.headers.location;
