@@ -29,15 +29,6 @@
         </label>
 
         <label>
-          Can go expert market
-          <select id="expertFilter">
-            <option value="all">All</option>
-            <option value="yes">Yes</option>
-            <option value="no">No</option>
-          </select>
-        </label>
-
-        <label>
           Min delisting chance (%)
           <input type="number" id="chanceFilter" min="0" max="100" step="1" value="0" />
         </label>
@@ -52,11 +43,12 @@
               <th data-key="price">Price</th>
               <th data-key="marketCap">Market Cap</th>
               <th data-key="avgVolume">Avg Volume</th>
-              <th data-key="shortBorrowCost">Short Borrow Cost</th>
-              <th data-key="optionIV">Option IV</th>
+              <th data-key="avgPrice30d">30D Avg Price</th>
+              <th data-key="avgMarketCap30d">30D Avg Mkt Cap</th>
+              <th data-key="reverseSplitPastYear">Reverse Split 1Y</th>
+              <th data-key="filingsCurrent">Current Filings</th>
               <th data-key="delistReason">Delist Reason</th>
               <th data-key="expectedDelistingDate">Expected Delisting Date</th>
-              <th data-key="expertMarketEligible">Expert Market?</th>
               <th data-key="delistingChance">Delisting Chance</th>
             </tr>
           </thead>
