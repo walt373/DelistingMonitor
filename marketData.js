@@ -77,12 +77,35 @@
     };
   }
 
+  function containsDelistingLanguage(text) {
+    const normalized = String(text || "").toLowerCase();
+    if (!normalized) return false;
+
+    return [
+      "notice of delisting",
+      "delisting notice",
+      "listing qualifications",
+      "minimum bid price",
+      "below $1.00",
+      "below the minimum bid price",
+      "publicly held shares",
+      "public float",
+      "market value of listed securities",
+      "equity deficiency",
+      "stockholders' equity",
+      "shareholders' equity",
+      "late filing",
+      "delinquent in filing",
+    ].some((needle) => normalized.includes(needle));
+  }
+
   const api = {
     computeOptionIvFromChain,
     firstFinite,
     parseLooseNumber,
     parseNasdaqQuoteSummary,
     readRawValue,
+    containsDelistingLanguage,
   };
 
   globalScope.MarketDataUtils = api;

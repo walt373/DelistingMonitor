@@ -12,6 +12,7 @@ const MARKET_DATA_PROXY = (url) => `/api/market-proxy?url=${encodeURIComponent(u
 const NASDAQ_SUMMARY_URL = (symbol) => `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/summary?assetclass=stocks`;
 
 const {
+  containsDelistingLanguage,
   firstFinite,
   parseNasdaqQuoteSummary,
   readRawValue,
@@ -20,7 +21,14 @@ const {
 const SEC_DISCOVERY_QUERY = {
   label: "8-K notice of delisting",
   forms: "8-K",
-  keywords: ["notice of delisting"],
+  keywords: [
+    "notice of delisting",
+    "listing qualifications",
+    "minimum bid price",
+    "equity deficiency",
+    "public float",
+    "late filing",
+  ],
   reason: "Notice of delisting",
 };
 
@@ -219,7 +227,8 @@ function inferReasonFromText(text) {
 
 function shouldIncludeFilingForQuery(query, filing) {
   const haystack = `${filing.title} ${filing.summary}`.toLowerCase();
-  const keywordMatch = query.keywords.some((keyword) => haystack.includes(keyword));
+  const keywordMatch = query.keywords.some((keyword) => haystack.includes(keyword))
+    || containsDelistingLanguage(haystack);
   if (!keywordMatch) return false;
   return filing.formType.toUpperCase() === "8-K" && isWithinLookbackWindow(filing.filedDate, SEC_LOOKBACK_DAYS);
 }
