@@ -1,7 +1,8 @@
 const DATA_URL = "data/stocks.json";
 const LIVE_QUOTE_REFRESH_MS = 60_000;
 const DATA_REFRESH_MS = 900_000;
-const SEC_MAX_ENTRIES_PER_QUERY = 40;
+const SEC_MAX_ENTRIES_PER_QUERY = 100;
+const SEC_LOOKBACK_DAYS = 30;
 const SEC_CORS_PROXIES = [
   (url) => `/api/sec-proxy?url=${encodeURIComponent(url)}`,
   (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
@@ -11,43 +12,21 @@ const MARKET_DATA_PROXY = (url) => `/api/market-proxy?url=${encodeURIComponent(u
 const NASDAQ_SUMMARY_URL = (symbol) => `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/summary?assetclass=stocks`;
 
 const {
-  computeOptionIvFromChain,
   firstFinite,
   parseNasdaqQuoteSummary,
   readRawValue,
 } = window.MarketDataUtils;
 
-const SEC_DISCOVERY_QUERIES = [
-  {
-    label: "Exchange delisting notices",
-    forms: "25-NSE,25,8-K",
-    keywords: ["notice of delisting", "delisting", "suspended from trading"],
-    reason: "Notice of delisting"
-  },
-  {
-    label: "Late filing notices",
-    forms: "NT 10-K,NT 10-Q,8-K",
-    keywords: ["unable to file", "late filing", "notification of late filing"],
-    reason: "Late SEC filing (10-K / 10-Q)"
-  },
-  {
-    label: "Bankruptcy/restructuring events",
-    forms: "8-K",
-    keywords: ["bankruptcy", "chapter 11", "restructuring support agreement"],
-    reason: "Bankruptcy / restructuring proceedings"
-  },
-  {
-    label: "Bid-price / compliance notices",
-    forms: "8-K",
-    keywords: ["minimum bid price", "non-compliance", "listing standards"],
-    reason: "Minimum bid price non-compliance"
-  }
-];
+const SEC_DISCOVERY_QUERY = {
+  label: "8-K notice of delisting",
+  forms: "8-K",
+  keywords: ["notice of delisting"],
+  reason: "Notice of delisting",
+};
 
 const tableBody = document.querySelector("#stocksTable tbody");
 const searchInput = document.getElementById("searchInput");
 const reasonFilter = document.getElementById("reasonFilter");
-const expertFilter = document.getElementById("expertFilter");
 const chanceFilter = document.getElementById("chanceFilter");
 const detailsContent = document.getElementById("detailsContent");
 const headers = document.querySelectorAll("#stocksTable th");
@@ -62,6 +41,7 @@ let dataGeneratedAt = null;
 let liveQuoteSyncEnabled = true;
 let liveQuoteTimerId = null;
 const cikTickerCache = new Map();
+const tickerCikCache = new Map();
 
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
@@ -232,31 +212,31 @@ function inferReasonFromText(text) {
     return "Notice of delisting: exchange deficiency cited in filing";
   }
 
-  for (const query of SEC_DISCOVERY_QUERIES) {
-    if (query.keywords.some((keyword) => normalized.includes(keyword))) {
-      return query.reason;
-    }
-  }
-
-  return "Elevated listing-compliance risk";
+  return normalized.includes("notice of delisting")
+    ? "Notice of delisting: exchange deficiency cited in filing"
+    : "Notice of delisting";
 }
 
 function shouldIncludeFilingForQuery(query, filing) {
   const haystack = `${filing.title} ${filing.summary}`.toLowerCase();
   const keywordMatch = query.keywords.some((keyword) => haystack.includes(keyword));
-  if (keywordMatch) return true;
+  if (!keywordMatch) return false;
+  return filing.formType.toUpperCase() === "8-K" && isWithinLookbackWindow(filing.filedDate, SEC_LOOKBACK_DAYS);
+}
 
-  const formType = (filing.formType || "").toUpperCase();
+function isWithinLookbackWindow(dateText, days) {
+  const parsed = new Date(dateText);
+  if (Number.isNaN(parsed.getTime())) return false;
+  const threshold = new Date();
+  threshold.setDate(threshold.getDate() - days);
+  return parsed >= threshold;
+}
 
-  // Some form types are intrinsically delisting-risk signals even without keyword matches.
-  if (query.reason === "Notice of delisting" && ["25", "25-NSE"].includes(formType)) {
-    return true;
-  }
-  if (query.reason === "Late SEC filing (10-K / 10-Q)" && ["NT 10-K", "NT 10-Q"].includes(formType)) {
-    return true;
-  }
-
-  return false;
+function isListedOnMajorExchange(exchangeCodeOrName) {
+  const exchange = String(exchangeCodeOrName || "").toUpperCase();
+  if (!exchange) return false;
+  return exchange.includes("NASDAQ") || exchange.includes("NMS") || exchange.includes("NCM") || exchange.includes("NGM") || exchange.includes("NMS")
+    || exchange.includes("NYSE") || exchange.includes("NYQ") || exchange.includes("NYS") || exchange.includes("NYE");
 }
 
 function extractTickerFromText(text) {
@@ -306,6 +286,76 @@ async function fetchTickerForCik(cik) {
   return null;
 }
 
+async function fetchCikForTicker(ticker) {
+  const normalizedTicker = String(ticker || "").toUpperCase();
+  if (!normalizedTicker) return null;
+  if (tickerCikCache.has(normalizedTicker)) return tickerCikCache.get(normalizedTicker);
+
+  const mappingUrl = "https://www.sec.gov/files/company_tickers.json";
+  const candidateUrls = [...SEC_CORS_PROXIES.map((buildProxyUrl) => buildProxyUrl(mappingUrl)), mappingUrl];
+
+  for (const candidateUrl of candidateUrls) {
+    try {
+      const response = await fetchWithTimeout(candidateUrl, {}, 12_000);
+      if (!response.ok) continue;
+      const payload = await response.json();
+      const match = Object.values(payload || {}).find((item) => String(item?.ticker || "").toUpperCase() === normalizedTicker);
+      if (!match?.cik_str) continue;
+      const cik = String(match.cik_str).padStart(10, "0");
+      tickerCikCache.set(normalizedTicker, cik);
+      cikTickerCache.set(cik, normalizedTicker);
+      return cik;
+    } catch (_error) {
+      // Continue trying alternate URLs/proxies.
+    }
+  }
+
+  tickerCikCache.set(normalizedTicker, null);
+  return null;
+}
+
+async function fetchSecFilingCurrencyStatus(ticker) {
+  const cik = await fetchCikForTicker(ticker);
+  if (!cik) return null;
+
+  const dataUrl = `https://data.sec.gov/submissions/CIK${cik}.json`;
+  const candidateUrls = [...SEC_CORS_PROXIES.map((buildProxyUrl) => buildProxyUrl(dataUrl)), dataUrl];
+
+  for (const candidateUrl of candidateUrls) {
+    try {
+      const response = await fetchWithTimeout(candidateUrl, {}, 12_000);
+      if (!response.ok) continue;
+      const payload = await response.json();
+      const forms = payload?.filings?.recent?.form || [];
+      const dates = payload?.filings?.recent?.filingDate || [];
+
+      let latestPeriodic = null;
+      let latestNt = null;
+      for (let index = 0; index < forms.length; index += 1) {
+        const form = String(forms[index] || "").toUpperCase();
+        const date = dates[index] || null;
+        if (!date) continue;
+        if (!latestPeriodic && (form === "10-Q" || form === "10-K")) {
+          latestPeriodic = date;
+        }
+        if (!latestNt && (form === "NT 10-Q" || form === "NT 10-K")) {
+          latestNt = date;
+        }
+        if (latestPeriodic && latestNt) break;
+      }
+
+      const isCurrent = latestNt
+        ? (latestPeriodic ? new Date(latestPeriodic) >= new Date(latestNt) : false)
+        : true;
+      return { isCurrent, latestPeriodic, latestNt };
+    } catch (_error) {
+      // Continue trying alternate URLs/proxies.
+    }
+  }
+
+  return null;
+}
+
 async function buildStockFromFiling(filing) {
   const filingText = `${filing.title} ${filing.summary}`;
   let ticker = extractTickerFromText(filingText);
@@ -321,9 +371,10 @@ async function buildStockFromFiling(filing) {
     price: Number.NaN,
     marketCap: Number.NaN,
     avgVolume: Number.NaN,
-    shortBorrowCost: Number.NaN,
-    optionIV: Number.NaN,
-    expertMarketEligible: false,
+    avgPrice30d: Number.NaN,
+    avgMarketCap30d: Number.NaN,
+    reverseSplitPastYear: false,
+    filingsCurrent: null,
     delistReason: inferReasonFromText(filingText),
     expectedDelistingDate: filing.filedDate || undefined,
     secFilingUrl: filing.link || `https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(ticker)}`,
@@ -401,12 +452,10 @@ async function discoverStocksFromSecFilings() {
   const byTicker = new Map();
   const warnings = [];
 
-  for (const query of SEC_DISCOVERY_QUERIES) {
-    const filings = await fetchSecRecentFilingsForQuery(query);
-    for (const filing of filings) {
-      const stock = await buildStockFromFiling(filing);
-      if (stock) byTicker.set(stock.ticker, stock);
-    }
+  const filings = await fetchSecRecentFilingsForQuery(SEC_DISCOVERY_QUERY);
+  for (const filing of filings) {
+    const stock = await buildStockFromFiling(filing);
+    if (stock) byTicker.set(stock.ticker, stock);
   }
 
   return { stocks: Array.from(byTicker.values()), warnings };
@@ -430,7 +479,6 @@ function populateReasonOptions() {
 function getVisibleStocks() {
   const search = searchInput.value.trim().toLowerCase();
   const reason = reasonFilter.value;
-  const expert = expertFilter.value;
   const minChance = Number(chanceFilter.value || 0);
 
   return stocks
@@ -438,11 +486,9 @@ function getVisibleStocks() {
       const matchesSearch =
         stock.ticker.toLowerCase().includes(search) || stock.company.toLowerCase().includes(search);
       const matchesReason = reason === "all" || stock.delistReason === reason;
-      const matchesExpert =
-        expert === "all" || (expert === "yes" ? stock.expertMarketEligible : !stock.expertMarketEligible);
       const matchesChance = stock.delistingChance >= minChance;
 
-      return matchesSearch && matchesReason && matchesExpert && matchesChance;
+      return matchesSearch && matchesReason && matchesChance;
     })
     .sort((a, b) => {
       const aVal = a[sortKey];
@@ -484,11 +530,12 @@ function renderTable() {
     appendCell(tr, formatMoney(stock.price));
     appendCell(tr, formatCompactMoney(stock.marketCap));
     appendCell(tr, formatNumber(stock.avgVolume));
-    appendCell(tr, formatPct(stock.shortBorrowCost));
-    appendCell(tr, Number.isFinite(stock.optionIV) ? `${stock.optionIV}%` : "N/A");
+    appendCell(tr, formatMoney(stock.avgPrice30d));
+    appendCell(tr, formatCompactMoney(stock.avgMarketCap30d));
+    appendCell(tr, stock.reverseSplitPastYear ? "Yes" : "No");
+    appendCell(tr, stock.filingsCurrent === null ? "Unknown" : stock.filingsCurrent ? "Yes" : "No");
     appendCell(tr, stock.delistReason);
     appendCell(tr, stock.expectedDelistingDate);
-    appendCell(tr, stock.expertMarketEligible ? "Yes" : "No");
 
     const riskCell = document.createElement("td");
     const riskPill = document.createElement("span");
@@ -508,7 +555,7 @@ function renderTable() {
 
   if (!visibleStocks.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = '<td colspan="11">No stocks match current filters.</td>';
+    tr.innerHTML = '<td colspan="12">No stocks match current filters.</td>';
     tableBody.appendChild(tr);
     detailsContent.innerHTML = "";
   }
@@ -533,9 +580,10 @@ function renderDetails(stock) {
       <dt>Price</dt><dd>${formatMoney(stock.price)}</dd>
       <dt>Market Cap</dt><dd>${formatCompactMoney(stock.marketCap)}</dd>
       <dt>Average Volume</dt><dd>${formatNumber(stock.avgVolume)}</dd>
-      <dt>Short Borrow Cost</dt><dd>${formatPct(stock.shortBorrowCost)}</dd>
-      <dt>Option IV</dt><dd>${Number.isFinite(stock.optionIV) ? `${stock.optionIV}%` : "N/A"}</dd>
-      <dt>Potential Expert Market</dt><dd>${stock.expertMarketEligible ? "Yes" : "No"}</dd>
+      <dt>30-Day Avg Price</dt><dd>${formatMoney(stock.avgPrice30d)}</dd>
+      <dt>30-Day Avg Market Cap</dt><dd>${formatCompactMoney(stock.avgMarketCap30d)}</dd>
+      <dt>Reverse Split (Past Year)</dt><dd>${stock.reverseSplitPastYear ? "Yes" : "No"}</dd>
+      <dt>Current on 10-K/10-Q Filings</dt><dd>${stock.filingsCurrent === null ? "Unknown" : stock.filingsCurrent ? "Yes" : "No"}</dd>
       <dt>Data as of</dt><dd>${formatTimestamp(stock.dataAsOf)}</dd>
       <dt>Notes</dt><dd>${stock.notes}</dd>
       <dt>SEC Filing</dt><dd><a href="${safeSecUrl}" target="_blank" rel="noreferrer">Open SEC filing/search</a></dd>
@@ -680,8 +728,9 @@ async function refreshLiveQuotes() {
     const enrichmentTargets = stocks.filter(
       (stock) =>
         stock.ticker === selectedTicker ||
-        !Number.isFinite(stock.shortBorrowCost) ||
-        !Number.isFinite(stock.optionIV)
+        !Number.isFinite(stock.avgPrice30d) ||
+        !Number.isFinite(stock.avgMarketCap30d) ||
+        stock.filingsCurrent === null
     );
     const enrichmentResults = await Promise.allSettled(
       enrichmentTargets.map((stock) => fetchMarketDetails(stock.ticker))
@@ -700,14 +749,24 @@ async function refreshLiveQuotes() {
         price: Number.isFinite(result.value.price) ? result.value.price : stock.price,
         marketCap: Number.isFinite(result.value.marketCap) ? result.value.marketCap : stock.marketCap,
         avgVolume: Number.isFinite(result.value.avgVolume) ? result.value.avgVolume : stock.avgVolume,
-        shortBorrowCost: Number.isFinite(result.value.shortBorrowCost)
-          ? result.value.shortBorrowCost
-          : stock.shortBorrowCost,
-        optionIV: Number.isFinite(result.value.optionIV) ? result.value.optionIV : stock.optionIV,
+        avgPrice30d: Number.isFinite(result.value.avgPrice30d) ? result.value.avgPrice30d : stock.avgPrice30d,
+        avgMarketCap30d: Number.isFinite(result.value.avgMarketCap30d)
+          ? result.value.avgMarketCap30d
+          : stock.avgMarketCap30d,
+        reverseSplitPastYear: Boolean(result.value.reverseSplitPastYear || stock.reverseSplitPastYear),
+        filingsCurrent: result.value.filingsCurrent === null || result.value.filingsCurrent === undefined
+          ? stock.filingsCurrent
+          : result.value.filingsCurrent,
+        exchange: result.value.exchange || stock.exchange,
         dataAsOf: result.value.dataAsOf || stock.dataAsOf,
       };
     });
 
+    stocks = stocks.filter((stock) => isListedOnMajorExchange(stock.exchange));
+
+    if (!stocks.some((stock) => stock.ticker === selectedTicker)) {
+      selectedTicker = stocks[0]?.ticker || null;
+    }
     renderTable();
     renderDetails(stocks.find((stock) => stock.ticker === selectedTicker));
 
@@ -758,44 +817,82 @@ async function fetchNasdaqQuote(symbol) {
   return parseNasdaqQuoteSummary(payload);
 }
 
+async function fetchYahooChart(symbol) {
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - (366 * 24 * 60 * 60);
+  return fetchJsonFromMarketProxy(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?period1=${start}&period2=${end}&interval=1d&events=split`
+  );
+}
+
 async function fetchMarketDetails(symbol) {
   const quoteSummaryUrl =
     `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}` +
     "?modules=price,summaryDetail,defaultKeyStatistics,financialData";
-  const optionsUrl = `https://query1.finance.yahoo.com/v7/finance/options/${encodeURIComponent(symbol)}`;
 
-  const [summaryPayload, optionsPayload, nasdaqPayload] = await Promise.all([
+  const [summaryPayload, nasdaqPayload, chartPayload, filingStatus] = await Promise.all([
     fetchJsonFromMarketProxy(quoteSummaryUrl).catch(() => null),
-    fetchJsonFromMarketProxy(optionsUrl).catch(() => null),
     fetchJsonFromMarketProxy(NASDAQ_SUMMARY_URL(symbol)).catch(() => null),
+    fetchYahooChart(symbol).catch(() => null),
+    fetchSecFilingCurrencyStatus(symbol).catch(() => null),
   ]);
 
   const result = summaryPayload?.quoteSummary?.result?.[0] || {};
   const price = result.price || {};
   const summaryDetail = result.summaryDetail || {};
-  const defaultKeyStatistics = result.defaultKeyStatistics || {};
   const financialData = result.financialData || {};
+  const defaultKeyStatistics = result.defaultKeyStatistics || {};
   const nasdaqFallback = parseNasdaqQuoteSummary(nasdaqPayload);
+  const chartResult = chartPayload?.chart?.result?.[0];
+  const closes = (chartResult?.indicators?.quote?.[0]?.close || []).filter((value) => Number.isFinite(value));
+  const recent30Closes = closes.slice(-30);
+  const avgPrice30d = recent30Closes.length
+    ? recent30Closes.reduce((sum, value) => sum + value, 0) / recent30Closes.length
+    : Number.NaN;
+  const sharesOutstanding = firstFinite(
+    readRawValue(defaultKeyStatistics.sharesOutstanding),
+    readRawValue(price.sharesOutstanding)
+  );
+  const marketCapFromShares = Number.isFinite(sharesOutstanding) && Number.isFinite(avgPrice30d)
+    ? sharesOutstanding * avgPrice30d
+    : Number.NaN;
+
+  const splitEvents = chartResult?.events?.splits || {};
+  const oneYearAgoEpoch = Math.floor(Date.now() / 1000) - (365 * 24 * 60 * 60);
+  const reverseSplitPastYear = Object.values(splitEvents).some((event) => {
+    const splitDate = Number(event?.date);
+    const numerator = Number(event?.numerator);
+    const denominator = Number(event?.denominator);
+    if (!Number.isFinite(splitDate) || splitDate < oneYearAgoEpoch) return false;
+    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return false;
+    return numerator < denominator;
+  });
 
   return {
     price: firstFinite(
       readRawValue(price.regularMarketPrice),
       readRawValue(financialData.currentPrice),
+      readRawValue(summaryDetail.previousClose),
       nasdaqFallback.price
     ),
-    marketCap: firstFinite(readRawValue(price.marketCap), nasdaqFallback.marketCap),
+    marketCap: firstFinite(
+      readRawValue(price.marketCap),
+      readRawValue(defaultKeyStatistics.marketCap),
+      nasdaqFallback.marketCap,
+      marketCapFromShares
+    ),
     avgVolume: firstFinite(
       readRawValue(summaryDetail.averageVolume),
       readRawValue(summaryDetail.averageVolume10days),
       readRawValue(summaryDetail.volume),
+      readRawValue(price.regularMarketVolume),
       nasdaqFallback.avgVolume
     ),
-    shortBorrowCost: firstFinite(
-      readRawValue(summaryDetail.borrowFee),
-      readRawValue(defaultKeyStatistics.borrowFee),
-      readRawValue(defaultKeyStatistics.shortPercentOfFloat)
-    ),
-    optionIV: computeOptionIvFromChain(optionsPayload),
+    avgPrice30d,
+    avgMarketCap30d: firstFinite(marketCapFromShares, Number.NaN),
+    reverseSplitPastYear,
+    filingsCurrent: filingStatus?.isCurrent ?? null,
+    exchange: price.exchangeName || price.fullExchangeName || price.exchange || null,
     dataAsOf: nasdaqFallback.dataAsOf || new Date().toISOString(),
   };
 }
@@ -826,7 +923,6 @@ async function init() {
 
 searchInput.addEventListener("input", renderTable);
 reasonFilter.addEventListener("change", renderTable);
-expertFilter.addEventListener("change", renderTable);
 chanceFilter.addEventListener("input", renderTable);
 
 headers.forEach((header) => {
