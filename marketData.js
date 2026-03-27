@@ -84,6 +84,8 @@
     return [
       "notice of delisting",
       "delisting notice",
+      "item 3.01",
+      "failure to satisfy a continued listing rule or standard",
       "listing qualifications",
       "minimum bid price",
       "below $1.00",

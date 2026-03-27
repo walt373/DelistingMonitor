@@ -161,6 +161,13 @@ function normalizeStock(rawStock) {
 
 function inferReasonFromText(text) {
   const normalized = text.toLowerCase();
+  const includesItem301 =
+    normalized.includes("item 3.01")
+    || normalized.includes("failure to satisfy a continued listing rule or standard");
+
+  if (includesItem301) {
+    return "Notice of delisting: Item 3.01 (failure to satisfy continued listing standard)";
+  }
 
   if (
     normalized.includes("minimum bid price") ||
@@ -628,8 +635,21 @@ async function loadDataset() {
   dataGeneratedAt = payload.generatedAt || new Date().toISOString();
   stocks = (payload.stocks || []).map(normalizeStock);
 
+  let secScanSummary = {
+    discoveredCount: 0,
+    warnings: [],
+    failed: false,
+    errorMessage: null,
+  };
+
   try {
     const { stocks: discoveredStocks, warnings } = await discoverStocksFromSecFilings();
+    secScanSummary = {
+      discoveredCount: discoveredStocks.length,
+      warnings,
+      failed: false,
+      errorMessage: null,
+    };
     if (discoveredStocks.length) {
       const seeded = new Map(stocks.map((stock) => [stock.ticker, stock]));
       for (const stock of discoveredStocks) {
@@ -642,6 +662,12 @@ async function loadDataset() {
       updateStatus(`SEC scan found 0 symbols (${warnings[0]}). Using dataset values.`);
     }
   } catch (error) {
+    secScanSummary = {
+      discoveredCount: 0,
+      warnings: [],
+      failed: true,
+      errorMessage: error.message,
+    };
     updateStatus(`SEC filing scan failed (${error.message}). Using local dataset values.`);
   }
 
@@ -654,6 +680,8 @@ async function loadDataset() {
   const selectedStock = stocks.find((stock) => stock.ticker === selectedTicker);
   renderTable();
   renderDetails(selectedStock);
+
+  return secScanSummary;
 }
 
 async function refreshLiveQuotes() {
@@ -908,9 +936,16 @@ async function fetchMarketDetails(symbol) {
 
 async function init() {
   try {
-    await loadDataset();
+    const secScanSummary = await loadDataset();
     if (!stocks.length) {
-      updateStatus("Dataset loaded with no tracked symbols. Add symbols to data/stocks.json to enable live quotes.");
+      if (secScanSummary.failed) {
+        updateStatus(
+          `Dataset has 0 tracked symbols and SEC scan failed (${secScanSummary.errorMessage}). ` +
+          "If running a static host (e.g., GitHub Pages), use `node server.js` so /api/sec-proxy is available."
+        );
+      } else {
+        updateStatus("Dataset loaded with no tracked symbols. Add symbols to data/stocks.json to enable live quotes.");
+      }
     } else {
       updateStatus("Dataset loaded. Waiting for live quote sync...");
       await refreshLiveQuotes();
