@@ -4,11 +4,15 @@ const DATA_REFRESH_MS = 900_000;
 const SEC_MAX_ENTRIES_PER_QUERY = 100;
 const SEC_LOOKBACK_DAYS = 30;
 const SEC_CORS_PROXIES = [
-  (url) => `/api/sec-proxy?url=${encodeURIComponent(url)}`,
+  (url) => `api/sec-proxy?url=${encodeURIComponent(url)}`,
   (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
 ];
-const MARKET_DATA_PROXY = (url) => `/api/market-proxy?url=${encodeURIComponent(url)}`;
+const MARKET_DATA_PROXIES = [
+  (url) => `api/market-proxy?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+];
 const NASDAQ_SUMMARY_URL = (symbol) => `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/summary?assetclass=stocks`;
 
 const {
@@ -833,16 +837,33 @@ async function refreshLiveQuotes() {
   }
 }
 
-async function fetchJsonFromMarketProxy(url, timeoutMs = 8000) {
-  const response = await fetchWithTimeout(MARKET_DATA_PROXY(url), { cache: "no-store" }, timeoutMs);
-  if (!response.ok) {
-    throw new Error(`Market data request failed (${response.status})`);
+async function fetchJsonWithFallback(url, proxyBuilders, timeoutMs = 8000) {
+  const candidateUrls = [...proxyBuilders.map((buildProxyUrl) => buildProxyUrl(url)), url];
+  let lastError = null;
+
+  for (const candidateUrl of candidateUrls) {
+    try {
+      const response = await fetchWithTimeout(candidateUrl, { cache: "no-store" }, timeoutMs);
+      if (!response.ok) {
+        lastError = new Error(`status ${response.status}`);
+        continue;
+      }
+      return await response.json();
+    } catch (error) {
+      lastError = error;
+    }
   }
-  return response.json();
+
+  const detail = lastError instanceof Error ? lastError.message : "unknown error";
+  throw new Error(`Market data request failed: ${detail}`);
+}
+
+async function fetchJsonFromMarketSource(url, timeoutMs = 8000) {
+  return fetchJsonWithFallback(url, MARKET_DATA_PROXIES, timeoutMs);
 }
 
 async function fetchYahooBatchQuotes(symbols) {
-  const payload = await fetchJsonFromMarketProxy(
+  const payload = await fetchJsonFromMarketSource(
     `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols.join(","))}`
   );
   const quotes = payload?.quoteResponse?.result || [];
@@ -850,14 +871,14 @@ async function fetchYahooBatchQuotes(symbols) {
 }
 
 async function fetchNasdaqQuote(symbol) {
-  const payload = await fetchJsonFromMarketProxy(NASDAQ_SUMMARY_URL(symbol));
+  const payload = await fetchJsonFromMarketSource(NASDAQ_SUMMARY_URL(symbol));
   return parseNasdaqQuoteSummary(payload);
 }
 
 async function fetchYahooChart(symbol) {
   const end = Math.floor(Date.now() / 1000);
   const start = end - (366 * 24 * 60 * 60);
-  return fetchJsonFromMarketProxy(
+  return fetchJsonFromMarketSource(
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?period1=${start}&period2=${end}&interval=1d&events=split`
   );
 }
@@ -868,8 +889,8 @@ async function fetchMarketDetails(symbol) {
     "?modules=price,summaryDetail,defaultKeyStatistics,financialData";
 
   const [summaryPayload, nasdaqPayload, chartPayload, filingStatus] = await Promise.all([
-    fetchJsonFromMarketProxy(quoteSummaryUrl).catch(() => null),
-    fetchJsonFromMarketProxy(NASDAQ_SUMMARY_URL(symbol)).catch(() => null),
+    fetchJsonFromMarketSource(quoteSummaryUrl).catch(() => null),
+    fetchJsonFromMarketSource(NASDAQ_SUMMARY_URL(symbol)).catch(() => null),
     fetchYahooChart(symbol).catch(() => null),
     fetchSecFilingCurrencyStatus(symbol).catch(() => null),
   ]);
@@ -941,7 +962,7 @@ async function init() {
       if (secScanSummary.failed) {
         updateStatus(
           `Dataset has 0 tracked symbols and SEC scan failed (${secScanSummary.errorMessage}). ` +
-          "If running a static host (e.g., GitHub Pages), use `node server.js` so /api/sec-proxy is available."
+          "For best reliability in static hosting environments (e.g., GitHub Pages), run with `node server.js` when possible."
         );
       } else {
         updateStatus("Dataset loaded with no tracked symbols. Add symbols to data/stocks.json to enable live quotes.");
